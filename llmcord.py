@@ -24,6 +24,16 @@ logging.basicConfig(
 
 VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl")
 
+
+def detect_image_type(data: bytes) -> str | None:
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return "image/png"
+    if data[:3] == b'\xff\xd8\xff':
+        return "image/jpeg"
+    if data[:6] in (b'GIF87a', b'GIF89a'):
+        return "image/gif"
+    return None
+
 EMBED_COLOR_COMPLETE = discord.Color.dark_green()
 EMBED_COLOR_INCOMPLETE = discord.Color.orange()
 
@@ -469,9 +479,9 @@ async def on_message(new_msg: discord.Message) -> None:
                 )
 
                 curr_node.images = [
-                    dict(type="image_url", image_url=dict(url=f"data:{att.content_type};base64,{b64encode(resp.content).decode('utf-8')}"))
+                    dict(type="image_url", image_url=dict(url=f"data:{actual_type};base64,{b64encode(resp.content).decode('utf-8')}"))
                     for att, resp in zip(good_attachments, attachment_responses)
-                    if att.content_type.startswith("image")
+                    if att.content_type.startswith("image") and (actual_type := detect_image_type(resp.content))
                 ]
 
                 if curr_node.role == "user" and (curr_node.text or curr_node.images):
@@ -549,11 +559,13 @@ async def on_message(new_msg: discord.Message) -> None:
                 for att, resp in zip(good_attachments, att_responses):
                     if context_images_used >= max_images:
                         break
-                    if att.content_type not in ("image/jpeg", "image/png", "image/gif"):
+                    if not att.content_type.startswith("image"):
                         continue
                     if len(resp.content) > 3 * 1024 * 1024:
                         continue
-                    images.append(dict(type="image_url", image_url=dict(url=f"data:{att.content_type};base64,{b64encode(resp.content).decode('utf-8')}")))
+                    if not (actual_type := detect_image_type(resp.content)):
+                        continue
+                    images.append(dict(type="image_url", image_url=dict(url=f"data:{actual_type};base64,{b64encode(resp.content).decode('utf-8')}")))
                     context_images_used += 1
 
             if role == "user" and (text or images):
