@@ -588,13 +588,28 @@ async def on_message(new_msg: discord.Message) -> None:
                 tool_calls_buffer = {}
                 got_tool_calls = False
 
+                has_web_search = bool(extra_body and "web_search_options" in extra_body)
+
+                # When web search and tools conflict, probe first (non-streaming, no web search)
+                # to detect whether the model wants to call a Discord tool.
+                if has_web_search and available_tools and tool_call_count < 5:
+                    probe_body = {k: v for k, v in extra_body.items() if k not in ("web_search_options", "reasoning_effort")} or None
+                    probe = await openai_client.chat.completions.create(
+                        model=model, messages=api_messages, tools=available_tools, stream=False,
+                        extra_headers=extra_headers, extra_query=extra_query, extra_body=probe_body,
+                    )
+                    if probe.choices[0].finish_reason == "tool_calls":
+                        for i, tc in enumerate(probe.choices[0].message.tool_calls):
+                            tool_calls_buffer[i] = {"id": tc.id, "name": tc.function.name, "args": tc.function.arguments}
+                        got_tool_calls = True
+
                 openai_kwargs = dict(model=model, messages=api_messages, stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
-                if available_tools and tool_call_count < 5:
+                if not has_web_search and available_tools and tool_call_count < 5:
                     openai_kwargs["tools"] = available_tools
                     if extra_body and "reasoning_effort" in extra_body:
                         openai_kwargs["extra_body"] = {k: v for k, v in extra_body.items() if k != "reasoning_effort"} or None
 
-                async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
+                async for chunk in ([] if got_tool_calls else await openai_client.chat.completions.create(**openai_kwargs)):
                     if finish_reason is not None:
                         break
 
