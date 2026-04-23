@@ -8,4 +8,6 @@ COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-CMD ["python", "llmcord.py"]
+COPY . .
+
+CMD sh -c 'echo "$CONFIG_YAML" > config.yaml && python llmcord.py'
