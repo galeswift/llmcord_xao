@@ -129,7 +129,7 @@ DISCORD_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "content_snippet": {"type": "string", "description": "Part of the message content to identify which message to pin"},
+                    "content_snippet": {"type": "string", "description": "Part of the message content or poll question to identify which message to pin"},
                 },
                 "required": ["content_snippet"],
             },
@@ -206,8 +206,8 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
             poll = discord.Poll(question=question, duration=timedelta(hours=duration_hours), multiple=allow_multiselect)
             for answer in answers:
                 poll.add_answer(text=answer)
-            await msg.channel.send(poll=poll)
-            return "Poll created."
+            poll_msg = await msg.channel.send(poll=poll)
+            return f"Poll created (message ID: {poll_msg.id})."
 
         if name == "create_event":
             if not msg.guild:
@@ -235,6 +235,8 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
             snippet = args.get("content_snippet", "").lower()
             async for m in msg.channel.history(limit=100):
                 content = m.content or next((e.description for e in m.embeds if e.description), "")
+                if not content and m.poll:
+                    content = m.poll.question
                 if snippet in content.lower():
                     await m.pin()
                     return "Message pinned."
