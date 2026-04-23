@@ -18,7 +18,7 @@ from openai import AsyncOpenAI
 import yaml
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s %(levelname)s: %(message)s",
 )
 
@@ -589,6 +589,7 @@ async def on_message(new_msg: discord.Message) -> None:
                 got_tool_calls = False
 
                 has_web_search = bool(extra_body and "web_search_options" in extra_body)
+                logging.debug(f"[gen loop] tool_call_count={tool_call_count} has_web_search={has_web_search} model={model} extra_body={extra_body}")
 
                 # When web search and tools conflict, probe first (non-streaming, no web search)
                 # to detect whether the model wants to call a Discord tool.
@@ -598,10 +599,14 @@ async def on_message(new_msg: discord.Message) -> None:
                         model=model, messages=api_messages, tools=available_tools, stream=False,
                         extra_headers=extra_headers, extra_query=extra_query, extra_body=probe_body,
                     )
-                    if probe.choices[0].finish_reason == "tool_calls":
+                    probe_finish = probe.choices[0].finish_reason
+                    logging.debug(f"[gen loop] probe finish_reason={probe_finish}")
+                    if probe_finish == "tool_calls":
                         for i, tc in enumerate(probe.choices[0].message.tool_calls):
                             tool_calls_buffer[i] = {"id": tc.id, "name": tc.function.name, "args": tc.function.arguments}
                         got_tool_calls = True
+
+                logging.debug(f"[gen loop] got_tool_calls={got_tool_calls} → path={'discord-tool' if got_tool_calls else ('web-search-nonstream' if has_web_search else 'stream')}")
 
                 if has_web_search and not got_tool_calls:
                     # Non-streaming call: streaming mode exposes internal web search tool_call
@@ -610,7 +615,9 @@ async def on_message(new_msg: discord.Message) -> None:
                         model=model, messages=api_messages, stream=False,
                         extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body,
                     )
+                    finish = response.choices[0].finish_reason
                     full_content = (response.choices[0].message.content or "").strip()
+                    logging.debug(f"[gen loop] web-search non-stream finish_reason={finish} content_len={len(full_content)}")
                     while full_content:
                         chunk_text = full_content[:max_message_length]
                         full_content = full_content[max_message_length:]
