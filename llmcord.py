@@ -524,6 +524,7 @@ async def on_message(new_msg: discord.Message) -> None:
     logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
 
     if (channel_context_count := config.get("channel_context_messages", 0)) > 0 and not is_dm:
+        context_images_used = 0
         async for msg in new_msg.channel.history(before=new_msg, limit=channel_context_count):
             if msg.id in chain_msg_ids or (msg.author.bot and msg.author != discord_bot.user):
                 continue
@@ -543,11 +544,17 @@ async def on_message(new_msg: discord.Message) -> None:
                 if att.content_type.startswith("text"):
                     text += ("\n" if text else "") + resp.text
 
-            images = [
-                dict(type="image_url", image_url=dict(url=f"data:{att.content_type};base64,{b64encode(resp.content).decode('utf-8')}"))
-                for att, resp in zip(good_attachments, att_responses)
-                if att.content_type.startswith("image")
-            ] if accept_images else []
+            images = []
+            if accept_images:
+                for att, resp in zip(good_attachments, att_responses):
+                    if context_images_used >= max_images:
+                        break
+                    if att.content_type not in ("image/jpeg", "image/png", "image/gif"):
+                        continue
+                    if len(resp.content) > 3 * 1024 * 1024:
+                        continue
+                    images.append(dict(type="image_url", image_url=dict(url=f"data:{att.content_type};base64,{b64encode(resp.content).decode('utf-8')}")))
+                    context_images_used += 1
 
             if role == "user" and (text or images):
                 text = f"<@{msg.author.id}>: {text}"
@@ -555,7 +562,7 @@ async def on_message(new_msg: discord.Message) -> None:
             if not text and not images:
                 continue
 
-            content = ([dict(type="text", text=text[:max_text])] + images[:max_images]) if images else text[:max_text]
+            content = ([dict(type="text", text=text[:max_text])] + images) if images else text[:max_text]
             messages.append(dict(role=role, content=content))
 
     if curr_msg is not None and not is_dm:
