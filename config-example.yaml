@@ -81,7 +81,7 @@ providers:
 search_model: "openai/gpt-4o-mini-search-preview"
 
 # Max web searches per response (prevents rate limit burnout on chained searches).
-max_web_searches: 2
+max_web_searches: 1
 
 models:
   openai/gpt-5:

@@ -15,7 +15,7 @@ from discord.app_commands import Choice
 from discord.ext import commands
 from discord.ui import LayoutView, TextDisplay
 import httpx
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 import yaml
 
 logging.basicConfig(
@@ -285,20 +285,23 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
             query = args.get("query", "")
             if not query:
                 return "No search query provided."
-            search_model_key = config.get("search_model", "openai/gpt-5-search-api")
+            search_model_key = config.get("search_model", "openai/gpt-4o-mini-search-preview")
             search_provider, search_model_name = search_model_key.split("/", 1)
             search_provider_config = config["providers"].get(search_provider, {})
             search_client = AsyncOpenAI(
                 base_url=search_provider_config.get("base_url", "https://api.openai.com/v1"),
                 api_key=search_provider_config.get("api_key", "sk-no-key-required"),
             )
-            response = await search_client.chat.completions.create(
-                model=search_model_name,
-                messages=[{"role": "user", "content": query}],
-                stream=False,
-                extra_body={"web_search_options": {}},
-            )
-            return response.choices[0].message.content or "No results found."
+            try:
+                response = await search_client.chat.completions.create(
+                    model=search_model_name,
+                    messages=[{"role": "user", "content": query}],
+                    stream=False,
+                    extra_body={"web_search_options": {}},
+                )
+                return response.choices[0].message.content or "No results found."
+            except RateLimitError:
+                return "Web search rate limit reached. Answer from your training data instead."
 
         return f"Unknown tool: {name}"
 
@@ -634,7 +637,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
     tool_call_count = 0
     web_search_count = 0
-    max_web_searches = config.get("max_web_searches", 2)
+    max_web_searches = config.get("max_web_searches", 1)
 
     try:
         async with new_msg.channel.typing():
