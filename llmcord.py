@@ -18,7 +18,7 @@ from openai import AsyncOpenAI
 import yaml
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s",
 )
 
@@ -142,6 +142,20 @@ DISCORD_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for current, real-time information. Use this when the user asks about recent events, live data, current prices, or anything that may have changed since your training cutoff.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -208,6 +222,25 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
                     await event.delete()
                     return f"Event '{event.name}' cancelled."
             return "No matching event found."
+
+        if name == "web_search":
+            query = args.get("query", "")
+            if not query:
+                return "No search query provided."
+            search_model_key = config.get("search_model", "openai/gpt-5-search-api")
+            search_provider, search_model_name = search_model_key.split("/", 1)
+            search_provider_config = config["providers"].get(search_provider, {})
+            search_client = AsyncOpenAI(
+                base_url=search_provider_config.get("base_url", "https://api.openai.com/v1"),
+                api_key=search_provider_config.get("api_key", "sk-no-key-required"),
+            )
+            response = await search_client.chat.completions.create(
+                model=search_model_name,
+                messages=[{"role": "user", "content": query}],
+                stream=False,
+                extra_body={"web_search_options": {}},
+            )
+            return response.choices[0].message.content or "No results found."
 
         return f"Unknown tool: {name}"
 
@@ -588,52 +621,13 @@ async def on_message(new_msg: discord.Message) -> None:
                 tool_calls_buffer = {}
                 got_tool_calls = False
 
-                has_web_search = bool(extra_body and "web_search_options" in extra_body)
-                logging.debug(f"[gen loop] tool_call_count={tool_call_count} has_web_search={has_web_search} model={model} extra_body={extra_body}")
-
-                # When web search and tools conflict, probe first (non-streaming, no web search)
-                # to detect whether the model wants to call a Discord tool.
-                if has_web_search and available_tools and tool_call_count < 5:
-                    probe_body = {k: v for k, v in extra_body.items() if k not in ("web_search_options", "reasoning_effort")} or None
-                    probe = await openai_client.chat.completions.create(
-                        model=model, messages=api_messages, tools=available_tools, stream=False,
-                        extra_headers=extra_headers, extra_query=extra_query, extra_body=probe_body,
-                    )
-                    probe_finish = probe.choices[0].finish_reason
-                    logging.debug(f"[gen loop] probe finish_reason={probe_finish}")
-                    if probe_finish == "tool_calls":
-                        for i, tc in enumerate(probe.choices[0].message.tool_calls):
-                            tool_calls_buffer[i] = {"id": tc.id, "name": tc.function.name, "args": tc.function.arguments}
-                        got_tool_calls = True
-
-                logging.debug(f"[gen loop] got_tool_calls={got_tool_calls} → path={'discord-tool' if got_tool_calls else ('web-search-nonstream' if has_web_search else 'stream')}")
-
-                if has_web_search and not got_tool_calls:
-                    # Non-streaming call: streaming mode exposes internal web search tool_call
-                    # events that our loop would misread as Discord tool calls, causing a second response.
-                    response = await openai_client.chat.completions.create(
-                        model=model, messages=api_messages, stream=False,
-                        extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body,
-                    )
-                    finish = response.choices[0].finish_reason
-                    full_content = (response.choices[0].message.content or "").strip()
-                    logging.debug(f"[gen loop] web-search non-stream finish_reason={finish} content_len={len(full_content)}")
-                    while full_content:
-                        chunk_text = full_content[:max_message_length]
-                        full_content = full_content[max_message_length:]
-                        response_contents.append(chunk_text)
-                        if not use_plain_responses:
-                            embed.description = chunk_text
-                            embed.color = EMBED_COLOR_COMPLETE
-                            await reply_helper(embed=embed, silent=True)
-
                 openai_kwargs = dict(model=model, messages=api_messages, stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
-                if not has_web_search and available_tools and tool_call_count < 5:
+                if available_tools and tool_call_count < 5:
                     openai_kwargs["tools"] = available_tools
                     if extra_body and "reasoning_effort" in extra_body:
                         openai_kwargs["extra_body"] = {k: v for k, v in extra_body.items() if k != "reasoning_effort"} or None
 
-                async for chunk in ([] if (got_tool_calls or has_web_search) else await openai_client.chat.completions.create(**openai_kwargs)):
+                async for chunk in ([] if got_tool_calls else await openai_client.chat.completions.create(**openai_kwargs)):
                     if finish_reason is not None:
                         break
 
