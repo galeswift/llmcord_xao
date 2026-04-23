@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import json
+import sqlite3
 from base64 import b64encode
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -53,6 +54,16 @@ discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix=No
 
 httpx_client = httpx.AsyncClient()
 
+summaries_db = sqlite3.connect("summaries.db", check_same_thread=False)
+summaries_db.execute("""
+    CREATE TABLE IF NOT EXISTS summaries (
+        channel_id INTEGER PRIMARY KEY,
+        cut_msg_id INTEGER,
+        summary    TEXT
+    )
+""")
+summaries_db.commit()
+
 DISCORD_TOOLS = [
     {
         "type": "function",
@@ -86,6 +97,20 @@ DISCORD_TOOLS = [
                     "location": {"type": "string", "description": "Event location"},
                 },
                 "required": ["name", "start_time"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pin_message",
+            "description": "Pin a message in the current channel.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content_snippet": {"type": "string", "description": "Part of the message content to identify which message to pin"},
+                },
+                "required": ["content_snippet"],
             },
         },
     },
@@ -157,6 +182,15 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
             )
             return f"Event '{args.get('name')}' created for {start_time.strftime('%B %d %Y at %H:%M %Z')}."
 
+        if name == "pin_message":
+            snippet = args.get("content_snippet", "").lower()
+            async for m in msg.channel.history(limit=100):
+                content = m.content or next((e.description for e in m.embeds if e.description), "")
+                if snippet in content.lower():
+                    await m.pin()
+                    return "Message pinned."
+            return "No matching message found to pin."
+
         if name == "cancel_poll":
             question = args.get("question", "").lower()
             async for m in msg.channel.history(limit=100):
@@ -182,6 +216,51 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
     except Exception as e:
         logging.exception(f"Tool execution failed: {name}")
         return f"{name} failed: {e}"
+
+
+async def get_or_generate_summary(channel_id: int, cut_msg: discord.Message, openai_client: AsyncOpenAI, model: str) -> str:
+    row = summaries_db.execute(
+        "SELECT cut_msg_id, summary FROM summaries WHERE channel_id = ?", (channel_id,)
+    ).fetchone()
+
+    if row and row[0] == cut_msg.id:
+        return row[1]
+
+    # Collect cut-off messages from the msg_nodes cache (oldest first)
+    lines = []
+    msg = cut_msg
+    while msg is not None and len(lines) < 50:
+        node = msg_nodes.get(msg.id)
+        if not node:
+            break
+        if node.text:
+            lines.append(node.text)
+        msg = node.parent_msg
+    lines.reverse()
+
+    if not lines:
+        return ""
+
+    prior = f"Prior summary to build on:\n{row[1]}\n\n" if row else ""
+    prompt = (
+        f"{prior}Summarize the following Discord conversation concisely, "
+        f"preserving key facts, decisions, and context.\n\n"
+        + "\n".join(lines)
+    )
+
+    response = await openai_client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        stream=False,
+    )
+    summary = response.choices[0].message.content.strip()
+
+    summaries_db.execute(
+        "INSERT OR REPLACE INTO summaries (channel_id, cut_msg_id, summary) VALUES (?, ?, ?)",
+        (channel_id, cut_msg.id, summary),
+    )
+    summaries_db.commit()
+    return summary
 
 
 @dataclass
@@ -462,6 +541,14 @@ async def on_message(new_msg: discord.Message) -> None:
 
             content = ([dict(type="text", text=text[:max_text])] + images[:max_images]) if images else text[:max_text]
             messages.append(dict(role=role, content=content))
+
+    if curr_msg is not None and not is_dm:
+        try:
+            summary = await get_or_generate_summary(new_msg.channel.id, curr_msg, openai_client, model)
+            if summary:
+                messages.append({"role": "system", "content": f"Summary of earlier conversation:\n{summary}"})
+        except Exception:
+            logging.exception("Failed to generate conversation summary")
 
     if system_prompt := config.get("system_prompt"):
         now = datetime.now().astimezone()
