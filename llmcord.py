@@ -588,11 +588,15 @@ async def on_message(new_msg: discord.Message) -> None:
                 tool_calls_buffer = {}
                 got_tool_calls = False
 
-                openai_kwargs = dict(model=model, messages=api_messages, stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
-                if available_tools and tool_call_count < 5:
-                    openai_kwargs["tools"] = available_tools
-                    if extra_body and "reasoning_effort" in extra_body:
-                        openai_kwargs["extra_body"] = {k: v for k, v in extra_body.items() if k != "reasoning_effort"} or None
+                tools_extra_body = dict(extra_body or {})
+                tools_to_send = list(available_tools) if tool_call_count < 5 else []
+                if "web_search_options" in tools_extra_body:
+                    tools_to_send = [{"type": "web_search_preview"}] + tools_to_send
+                    del tools_extra_body["web_search_options"]
+                tools_extra_body.pop("reasoning_effort", None)
+                openai_kwargs = dict(model=model, messages=api_messages, stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=tools_extra_body or None)
+                if tools_to_send:
+                    openai_kwargs["tools"] = tools_to_send
 
                 async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
                     if finish_reason is not None:
