@@ -1,9 +1,10 @@
 import asyncio
 import base64
 import io
+import json
 from base64 import b64encode
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from typing import Any, Literal, Optional
 
@@ -48,6 +49,136 @@ activity = discord.CustomActivity(name=(config.get("status_message") or "github.
 discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix=None)
 
 httpx_client = httpx.AsyncClient()
+
+DISCORD_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "create_poll",
+            "description": "Create a Discord poll in the current channel.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "The poll question"},
+                    "answers": {"type": "array", "items": {"type": "string"}, "description": "Answer options (2-10)"},
+                    "duration_hours": {"type": "integer", "description": "Poll duration in hours (1-168, default 24)"},
+                    "allow_multiselect": {"type": "boolean", "description": "Allow selecting multiple answers"},
+                },
+                "required": ["question", "answers"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_event",
+            "description": "Create a scheduled event in the Discord server.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Event name"},
+                    "description": {"type": "string", "description": "Event description"},
+                    "start_time": {"type": "string", "description": "Start time in ISO 8601 format (e.g. 2025-06-01T19:00:00)"},
+                    "end_time": {"type": "string", "description": "End time in ISO 8601 format (optional, defaults to 1 hour after start)"},
+                    "location": {"type": "string", "description": "Event location"},
+                },
+                "required": ["name", "start_time"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_poll",
+            "description": "End an active Discord poll in the current channel early.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "Part of the poll question to identify it"},
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_event",
+            "description": "Cancel and delete a scheduled Discord event.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Part of the event name to identify it"},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+]
+
+
+async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
+    try:
+        if name == "create_poll":
+            question = args.get("question", "")
+            answers = args.get("answers", [])[:10]
+            duration_hours = min(max(int(args.get("duration_hours", 24)), 1), 168)
+            allow_multiselect = bool(args.get("allow_multiselect", False))
+            if not question or len(answers) < 2:
+                return "Failed: poll requires a question and at least 2 answers."
+            poll = discord.Poll(question=question, duration=timedelta(hours=duration_hours), multiple=allow_multiselect)
+            for answer in answers:
+                poll.add_answer(text=answer)
+            await msg.channel.send(poll=poll)
+            return "Poll created."
+
+        if name == "create_event":
+            if not msg.guild:
+                return "Cannot create events in DMs."
+            try:
+                start_time = datetime.fromisoformat(args["start_time"]).astimezone()
+            except (KeyError, ValueError):
+                return "Invalid start_time. Use ISO 8601 format (e.g. 2025-06-01T19:00:00)."
+            try:
+                end_time = datetime.fromisoformat(args["end_time"]).astimezone()
+            except (KeyError, ValueError):
+                end_time = start_time + timedelta(hours=1)
+            await msg.guild.create_scheduled_event(
+                name=args.get("name", "Event"),
+                description=args.get("description", ""),
+                start_time=start_time,
+                end_time=end_time,
+                entity_type=discord.EntityType.external,
+                privacy_level=discord.PrivacyLevel.guild_only,
+                location=args.get("location", "TBD"),
+            )
+            return f"Event '{args.get('name')}' created for {start_time.strftime('%B %d %Y at %H:%M %Z')}."
+
+        if name == "cancel_poll":
+            question = args.get("question", "").lower()
+            async for m in msg.channel.history(limit=100):
+                if m.poll and question in m.poll.question.lower():
+                    await m.end_poll()
+                    return f"Poll '{m.poll.question}' ended."
+            return "No matching active poll found."
+
+        if name == "cancel_event":
+            if not msg.guild:
+                return "Cannot cancel events in DMs."
+            event_name = args.get("name", "").lower()
+            for event in await msg.guild.fetch_scheduled_events():
+                if event_name in event.name.lower():
+                    await event.delete()
+                    return f"Event '{event.name}' cancelled."
+            return "No matching event found."
+
+        return f"Unknown tool: {name}"
+
+    except discord.Forbidden:
+        return f"Permission denied executing {name}. Check bot permissions."
+    except Exception as e:
+        logging.exception(f"Tool execution failed: {name}")
+        return f"{name} failed: {e}"
 
 
 @dataclass
@@ -337,11 +468,12 @@ async def on_message(new_msg: discord.Message) -> None:
         messages.append(dict(role="system", content=system_prompt))
 
     # Generate and send response message(s) (can be multiple if response is long)
-    curr_content = finish_reason = None
     response_msgs = []
     response_contents = []
 
-    openai_kwargs = dict(model=model, messages=messages[::-1], stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
+    api_messages = messages[::-1]
+    guild_only_tools = {"create_event", "cancel_event"}
+    available_tools = [t for t in DISCORD_TOOLS if not (is_dm and t["function"]["name"] in guild_only_tools)]
 
     if use_plain_responses := config.get("use_plain_responses", False):
         max_message_length = 4000
@@ -357,49 +489,103 @@ async def on_message(new_msg: discord.Message) -> None:
         msg_nodes[response_msg.id] = MsgNode(parent_msg=new_msg)
         await msg_nodes[response_msg.id].lock.acquire()
 
+    tool_call_count = 0
+
     try:
         async with new_msg.channel.typing():
-            async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
-                if finish_reason != None:
+            while True:
+                curr_content = finish_reason = None
+                tool_calls_buffer = {}
+                got_tool_calls = False
+
+                openai_kwargs = dict(model=model, messages=api_messages, stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
+                if available_tools and tool_call_count < 5:
+                    openai_kwargs["tools"] = available_tools
+                    if extra_body and "reasoning_effort" in extra_body:
+                        openai_kwargs["extra_body"] = {k: v for k, v in extra_body.items() if k != "reasoning_effort"} or None
+
+                async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
+                    if finish_reason is not None:
+                        break
+
+                    if not (choice := chunk.choices[0] if chunk.choices else None):
+                        continue
+
+                    chunk_finish_reason = choice.finish_reason
+                    delta = choice.delta
+
+                    if chunk_finish_reason == "tool_calls":
+                        if delta.tool_calls:
+                            for tc in delta.tool_calls:
+                                entry = tool_calls_buffer.setdefault(tc.index, {"id": "", "name": "", "args": ""})
+                                if tc.id: entry["id"] = tc.id
+                                if tc.function and tc.function.name: entry["name"] = tc.function.name
+                                if tc.function and tc.function.arguments: entry["args"] += tc.function.arguments
+                        got_tool_calls = True
+                        break
+
+                    if delta.tool_calls:
+                        for tc in delta.tool_calls:
+                            entry = tool_calls_buffer.setdefault(tc.index, {"id": "", "name": "", "args": ""})
+                            if tc.id: entry["id"] = tc.id
+                            if tc.function and tc.function.name: entry["name"] = tc.function.name
+                            if tc.function and tc.function.arguments: entry["args"] += tc.function.arguments
+                        continue
+
+                    finish_reason = chunk_finish_reason
+                    prev_content = curr_content or ""
+                    curr_content = delta.content or ""
+                    new_content = prev_content if finish_reason is None else (prev_content + curr_content)
+
+                    if response_contents == [] and new_content == "":
+                        continue
+
+                    if start_next_msg := response_contents == [] or len(response_contents[-1] + new_content) > max_message_length:
+                        response_contents.append("")
+
+                    response_contents[-1] += new_content
+
+                    if not use_plain_responses:
+                        time_delta = datetime.now().timestamp() - last_task_time
+
+                        ready_to_edit = time_delta >= EDIT_DELAY_SECONDS
+                        msg_split_incoming = finish_reason is None and len(response_contents[-1] + curr_content) > max_message_length
+                        is_final_edit = finish_reason is not None or msg_split_incoming
+                        is_good_finish = finish_reason is not None and finish_reason.lower() in ("stop", "end_turn")
+
+                        if start_next_msg or ready_to_edit or is_final_edit:
+                            embed.description = response_contents[-1] if is_final_edit else (response_contents[-1] + STREAMING_INDICATOR)
+                            embed.color = EMBED_COLOR_COMPLETE if msg_split_incoming or is_good_finish else EMBED_COLOR_INCOMPLETE
+
+                            if start_next_msg:
+                                await reply_helper(embed=embed, silent=True)
+                            else:
+                                await asyncio.sleep(EDIT_DELAY_SECONDS - time_delta)
+                                await response_msgs[-1].edit(embed=embed)
+
+                            last_task_time = datetime.now().timestamp()
+
+                if got_tool_calls:
+                    tool_call_count += 1
+                    sorted_tcs = [tool_calls_buffer[i] for i in sorted(tool_calls_buffer.keys())]
+                    assistant_tool_calls = [
+                        {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": tc["args"]}}
+                        for tc in sorted_tcs
+                    ]
+                    tool_result_msgs = []
+                    for tc in sorted_tcs:
+                        try:
+                            args = json.loads(tc["args"] or "{}")
+                        except json.JSONDecodeError:
+                            args = {}
+                        logging.info(f"Tool call: {tc['name']}({args})")
+                        result = await execute_tool(tc["name"], args, new_msg)
+                        tool_result_msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+                    api_messages = api_messages + [
+                        {"role": "assistant", "content": None, "tool_calls": assistant_tool_calls}
+                    ] + tool_result_msgs
+                else:
                     break
-
-                if not (choice := chunk.choices[0] if chunk.choices else None):
-                    continue
-
-                finish_reason = choice.finish_reason
-
-                prev_content = curr_content or ""
-                curr_content = choice.delta.content or ""
-
-                new_content = prev_content if finish_reason == None else (prev_content + curr_content)
-
-                if response_contents == [] and new_content == "":
-                    continue
-
-                if start_next_msg := response_contents == [] or len(response_contents[-1] + new_content) > max_message_length:
-                    response_contents.append("")
-
-                response_contents[-1] += new_content
-
-                if not use_plain_responses:
-                    time_delta = datetime.now().timestamp() - last_task_time
-
-                    ready_to_edit = time_delta >= EDIT_DELAY_SECONDS
-                    msg_split_incoming = finish_reason == None and len(response_contents[-1] + curr_content) > max_message_length
-                    is_final_edit = finish_reason != None or msg_split_incoming
-                    is_good_finish = finish_reason != None and finish_reason.lower() in ("stop", "end_turn")
-
-                    if start_next_msg or ready_to_edit or is_final_edit:
-                        embed.description = response_contents[-1] if is_final_edit else (response_contents[-1] + STREAMING_INDICATOR)
-                        embed.color = EMBED_COLOR_COMPLETE if msg_split_incoming or is_good_finish else EMBED_COLOR_INCOMPLETE
-
-                        if start_next_msg:
-                            await reply_helper(embed=embed, silent=True)
-                        else:
-                            await asyncio.sleep(EDIT_DELAY_SECONDS - time_delta)
-                            await response_msgs[-1].edit(embed=embed)
-
-                        last_task_time = datetime.now().timestamp()
 
             if use_plain_responses:
                 for content in response_contents:
