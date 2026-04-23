@@ -77,7 +77,11 @@ providers:
     base_url: http://localhost:8000/v1
 
 # Model used internally for web_search tool calls. Must support web_search_options.
-search_model: "openai/gpt-5-search-api"
+# gpt-4o-mini-search-preview has much higher rate limits than gpt-5-search-api.
+search_model: "openai/gpt-4o-mini-search-preview"
+
+# Max web searches per response (prevents rate limit burnout on chained searches).
+max_web_searches: 2
 
 models:
   openai/gpt-5:

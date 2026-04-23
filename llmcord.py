@@ -633,6 +633,8 @@ async def on_message(new_msg: discord.Message) -> None:
         await msg_nodes[response_msg.id].lock.acquire()
 
     tool_call_count = 0
+    web_search_count = 0
+    max_web_searches = config.get("max_web_searches", 2)
 
     try:
         async with new_msg.channel.typing():
@@ -641,9 +643,10 @@ async def on_message(new_msg: discord.Message) -> None:
                 tool_calls_buffer = {}
                 got_tool_calls = False
 
+                active_tools = [t for t in available_tools if not (t["function"]["name"] == "web_search" and web_search_count >= max_web_searches)]
                 openai_kwargs = dict(model=model, messages=api_messages, stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
-                if available_tools and tool_call_count < 5:
-                    openai_kwargs["tools"] = available_tools
+                if active_tools and tool_call_count < 5:
+                    openai_kwargs["tools"] = active_tools
                     if extra_body and "reasoning_effort" in extra_body:
                         openai_kwargs["extra_body"] = {k: v for k, v in extra_body.items() if k != "reasoning_effort"} or None
 
@@ -722,6 +725,8 @@ async def on_message(new_msg: discord.Message) -> None:
                         except json.JSONDecodeError:
                             args = {}
                         logging.info(f"Tool call: {tc['name']}({args})")
+                        if tc["name"] == "web_search":
+                            web_search_count += 1
                         result = await execute_tool(tc["name"], args, new_msg)
                         tool_result_msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
                     api_messages = api_messages + [
