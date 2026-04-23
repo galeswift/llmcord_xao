@@ -215,10 +215,12 @@ async def on_message(new_msg: discord.Message) -> None:
     # Build message chain and set user warnings
     messages = []
     user_warnings = set()
+    chain_msg_ids = set()
     curr_msg = new_msg
 
     while curr_msg != None and len(messages) < max_messages:
         curr_node = msg_nodes.setdefault(curr_msg.id, MsgNode())
+        chain_msg_ids.add(curr_msg.id)
 
         async with curr_node.lock:
             if curr_node.text == None:
@@ -291,6 +293,41 @@ async def on_message(new_msg: discord.Message) -> None:
             curr_msg = curr_node.parent_msg
 
     logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
+
+    if (channel_context_count := config.get("channel_context_messages", 0)) > 0 and not is_dm:
+        async for msg in new_msg.channel.history(before=new_msg, limit=channel_context_count):
+            if msg.id in chain_msg_ids or (msg.author.bot and msg.author != discord_bot.user):
+                continue
+
+            role = "assistant" if msg.author == discord_bot.user else "user"
+
+            text = msg.content.removeprefix(discord_bot.user.mention).strip()
+            if not text:
+                text = next((e.description for e in msg.embeds if e.description), "")
+            if not text:
+                text = next((c.content for c in msg.components if c.type == discord.ComponentType.text_display), "")
+
+            good_attachments = [att for att in msg.attachments if att.content_type and any(att.content_type.startswith(x) for x in ("text", "image"))]
+            att_responses = await asyncio.gather(*[httpx_client.get(att.url) for att in good_attachments])
+
+            for att, resp in zip(good_attachments, att_responses):
+                if att.content_type.startswith("text"):
+                    text += ("\n" if text else "") + resp.text
+
+            images = [
+                dict(type="image_url", image_url=dict(url=f"data:{att.content_type};base64,{b64encode(resp.content).decode('utf-8')}"))
+                for att, resp in zip(good_attachments, att_responses)
+                if att.content_type.startswith("image")
+            ] if accept_images else []
+
+            if role == "user" and (text or images):
+                text = f"<@{msg.author.id}>: {text}"
+
+            if not text and not images:
+                continue
+
+            content = ([dict(type="text", text=text[:max_text])] + images[:max_images]) if images else text[:max_text]
+            messages.append(dict(role=role, content=content))
 
     if system_prompt := config.get("system_prompt"):
         now = datetime.now().astimezone()
