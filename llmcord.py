@@ -603,13 +603,30 @@ async def on_message(new_msg: discord.Message) -> None:
                             tool_calls_buffer[i] = {"id": tc.id, "name": tc.function.name, "args": tc.function.arguments}
                         got_tool_calls = True
 
+                if has_web_search and not got_tool_calls:
+                    # Non-streaming call: streaming mode exposes internal web search tool_call
+                    # events that our loop would misread as Discord tool calls, causing a second response.
+                    response = await openai_client.chat.completions.create(
+                        model=model, messages=api_messages, stream=False,
+                        extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body,
+                    )
+                    full_content = (response.choices[0].message.content or "").strip()
+                    while full_content:
+                        chunk_text = full_content[:max_message_length]
+                        full_content = full_content[max_message_length:]
+                        response_contents.append(chunk_text)
+                        if not use_plain_responses:
+                            embed.description = chunk_text
+                            embed.color = EMBED_COLOR_COMPLETE
+                            await reply_helper(embed=embed, silent=True)
+
                 openai_kwargs = dict(model=model, messages=api_messages, stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
                 if not has_web_search and available_tools and tool_call_count < 5:
                     openai_kwargs["tools"] = available_tools
                     if extra_body and "reasoning_effort" in extra_body:
                         openai_kwargs["extra_body"] = {k: v for k, v in extra_body.items() if k != "reasoning_effort"} or None
 
-                async for chunk in ([] if got_tool_calls else await openai_client.chat.completions.create(**openai_kwargs)):
+                async for chunk in ([] if (got_tool_calls or has_web_search) else await openai_client.chat.completions.create(**openai_kwargs)):
                     if finish_reason is not None:
                         break
 
