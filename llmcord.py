@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import sqlite3
+import struct
 from base64 import b64encode
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -33,6 +34,16 @@ def detect_image_type(data: bytes) -> str | None:
     if data[:6] in (b'GIF87a', b'GIF89a'):
         return "image/gif"
     return None
+
+
+def image_too_large(data: bytes, actual_type: str, max_bytes: int = 2 * 1024 * 1024, max_dimension: int = 1280) -> bool:
+    if len(data) > max_bytes:
+        return True
+    if actual_type == "image/png" and len(data) >= 24:
+        w, h = struct.unpack(">II", data[16:24])
+        if w > max_dimension or h > max_dimension:
+            return True
+    return False
 
 EMBED_COLOR_COMPLETE = discord.Color.dark_green()
 EMBED_COLOR_INCOMPLETE = discord.Color.orange()
@@ -482,11 +493,10 @@ async def on_message(new_msg: discord.Message) -> None:
                 for att, resp in zip(good_attachments, attachment_responses):
                     if not att.content_type.startswith("image"):
                         continue
-                    magic = resp.content[:16].hex()
                     actual_type = detect_image_type(resp.content)
-                    logging.info(f"[reply-img] {att.filename} declared={att.content_type} size={len(resp.content)//1024}KB magic={magic} detected={actual_type}")
-                    if actual_type:
-                        reply_images.append(dict(type="image_url", image_url=dict(url=f"data:{actual_type};base64,{b64encode(resp.content).decode('utf-8')}")))
+                    if not actual_type or image_too_large(resp.content, actual_type):
+                        continue
+                    reply_images.append(dict(type="image_url", image_url=dict(url=f"data:{actual_type};base64,{b64encode(resp.content).decode('utf-8')}")))
                 curr_node.images = reply_images
 
                 if curr_node.role == "user" and (curr_node.text or curr_node.images):
@@ -563,23 +573,18 @@ async def on_message(new_msg: discord.Message) -> None:
             if accept_images:
                 for att, resp in zip(good_attachments, att_responses):
                     if context_images_used >= max_images:
-                        logging.info(f"[img] skip {att.filename}: hit max_images={max_images}")
                         break
                     if not att.content_type.startswith("image"):
                         continue
-                    magic = resp.content[:16].hex()
-                    size_kb = len(resp.content) // 1024
                     actual_type = detect_image_type(resp.content)
-                    logging.info(f"[img] {att.filename} declared={att.content_type} size={size_kb}KB magic={magic} detected={actual_type}")
-                    if len(resp.content) > 3 * 1024 * 1024:
-                        logging.info(f"[img] skip {att.filename}: too large ({size_kb}KB)")
-                        continue
                     if not actual_type:
-                        logging.info(f"[img] skip {att.filename}: unrecognized format")
+                        continue
+                    if image_too_large(resp.content, actual_type):
+                        w, h = (struct.unpack(">II", resp.content[16:24]) if actual_type == "image/png" and len(resp.content) >= 24 else (0, 0))
+                        logging.info(f"[img] skip {att.filename}: {len(resp.content)//1024}KB {w}x{h}")
                         continue
                     images.append(dict(type="image_url", image_url=dict(url=f"data:{actual_type};base64,{b64encode(resp.content).decode('utf-8')}")))
                     context_images_used += 1
-                    logging.info(f"[img] included {att.filename} as {actual_type} (total context images: {context_images_used})")
 
             if role == "user" and (text or images):
                 text = f"<@{msg.author.id}>: {text}"
