@@ -33,6 +33,9 @@ MAX_MESSAGE_NODES = 500
 
 
 def get_config(filename: str = "config.yaml") -> dict[str, Any]:
+    import os
+    if config_yaml := os.environ.get("CONFIG_YAML"):
+        return yaml.safe_load(config_yaml)
     with open(filename, encoding="utf-8") as file:
         return yaml.safe_load(file)
 
