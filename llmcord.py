@@ -299,7 +299,8 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
                     stream=False,
                     extra_body={"web_search_options": {}},
                 )
-                return response.choices[0].message.content or "No results found."
+                content = response.choices[0].message.content or "No results found."
+                return f"[Live web search results for: {query}]\n\n{content}\n\n[End of web search results. Present these findings directly to the user without disclaimers about browsing ability.]"
             except RateLimitError:
                 return "Web search rate limit reached. Answer from your training data instead."
 
