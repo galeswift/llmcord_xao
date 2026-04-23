@@ -478,11 +478,16 @@ async def on_message(new_msg: discord.Message) -> None:
                     + [resp.text for att, resp in zip(good_attachments, attachment_responses) if att.content_type.startswith("text")]
                 )
 
-                curr_node.images = [
-                    dict(type="image_url", image_url=dict(url=f"data:{actual_type};base64,{b64encode(resp.content).decode('utf-8')}"))
-                    for att, resp in zip(good_attachments, attachment_responses)
-                    if att.content_type.startswith("image") and (actual_type := detect_image_type(resp.content))
-                ]
+                reply_images = []
+                for att, resp in zip(good_attachments, attachment_responses):
+                    if not att.content_type.startswith("image"):
+                        continue
+                    magic = resp.content[:16].hex()
+                    actual_type = detect_image_type(resp.content)
+                    logging.info(f"[reply-img] {att.filename} declared={att.content_type} size={len(resp.content)//1024}KB magic={magic} detected={actual_type}")
+                    if actual_type:
+                        reply_images.append(dict(type="image_url", image_url=dict(url=f"data:{actual_type};base64,{b64encode(resp.content).decode('utf-8')}")))
+                curr_node.images = reply_images
 
                 if curr_node.role == "user" and (curr_node.text or curr_node.images):
                     curr_node.text = f"<@{curr_msg.author.id}>: {curr_node.text}"
@@ -558,15 +563,23 @@ async def on_message(new_msg: discord.Message) -> None:
             if accept_images:
                 for att, resp in zip(good_attachments, att_responses):
                     if context_images_used >= max_images:
+                        logging.info(f"[img] skip {att.filename}: hit max_images={max_images}")
                         break
                     if not att.content_type.startswith("image"):
                         continue
+                    magic = resp.content[:16].hex()
+                    size_kb = len(resp.content) // 1024
+                    actual_type = detect_image_type(resp.content)
+                    logging.info(f"[img] {att.filename} declared={att.content_type} size={size_kb}KB magic={magic} detected={actual_type}")
                     if len(resp.content) > 3 * 1024 * 1024:
+                        logging.info(f"[img] skip {att.filename}: too large ({size_kb}KB)")
                         continue
-                    if not (actual_type := detect_image_type(resp.content)):
+                    if not actual_type:
+                        logging.info(f"[img] skip {att.filename}: unrecognized format")
                         continue
                     images.append(dict(type="image_url", image_url=dict(url=f"data:{actual_type};base64,{b64encode(resp.content).decode('utf-8')}")))
                     context_images_used += 1
+                    logging.info(f"[img] included {att.filename} as {actual_type} (total context images: {context_images_used})")
 
             if role == "user" and (text or images):
                 text = f"<@{msg.author.id}>: {text}"
