@@ -9,7 +9,6 @@ max_images: 5
 max_messages: 25
 channel_context_messages: 25
 
-image_command: "!img"
 image_model: "gpt-image-2"
 image_size: "1024x1024"
 image_quality: "medium"

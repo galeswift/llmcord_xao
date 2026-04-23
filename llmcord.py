@@ -156,6 +156,20 @@ DISCORD_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image",
+            "description": "Generate an image from a text description and post it in the channel. Use this when the user asks for an image, picture, illustration, or drawing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Detailed description of the image to generate"},
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
 ]
 
 
@@ -222,6 +236,29 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
                     await event.delete()
                     return f"Event '{event.name}' cancelled."
             return "No matching event found."
+
+        if name == "generate_image":
+            prompt = args.get("prompt", "")
+            if not prompt:
+                return "No image prompt provided."
+            provider_config = config["providers"].get("openai", {})
+            api_key = provider_config.get("api_key")
+            if not api_key:
+                return "No OpenAI API key configured for image generation."
+            image_client = AsyncOpenAI(
+                base_url=provider_config.get("base_url", "https://api.openai.com/v1"),
+                api_key=api_key,
+            )
+            result = await image_client.images.generate(
+                model=config.get("image_model", "gpt-image-2"),
+                prompt=prompt,
+                size=config.get("image_size", "1024x1024"),
+                quality=config.get("image_quality", "medium"),
+                background=config.get("image_background", "auto"),
+            )
+            image_bytes = base64.b64decode(result.data[0].b64_json)
+            await msg.channel.send(file=discord.File(io.BytesIO(image_bytes), filename="generated.png"))
+            return "Image generated and sent."
 
         if name == "web_search":
             query = args.get("query", "")
@@ -340,47 +377,6 @@ async def model_autocomplete(interaction: discord.Interaction, curr_str: str) ->
 
     return choices[:25]
 
-async def handle_image_command(new_msg: discord.Message, prompt: str, config: dict[str, Any]) -> bool:
-    provider_config = config["providers"].get("openai", {})
-    api_key = provider_config.get("api_key")
-    base_url = provider_config.get("base_url", "https://api.openai.com/v1")
-
-    if not api_key:
-        await new_msg.reply("No OpenAI API key is configured for image generation.")
-        return True
-
-    image_model = config.get("image_model", "gpt-image-2")
-    image_size = config.get("image_size", "1024x1024")
-    image_quality = config.get("image_quality", "medium")
-    image_background = config.get("image_background", "auto")
-
-    openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
-
-    try:
-        async with new_msg.channel.typing():
-            result = await openai_client.images.generate(
-                model=image_model,
-                prompt=prompt,
-                size=image_size,
-                quality=image_quality,
-                background=image_background,
-            )
-
-        image_base64 = result.data[0].b64_json
-        image_bytes = base64.b64decode(image_base64)
-
-        filename = "generated.png"
-        discord_file = discord.File(io.BytesIO(image_bytes), filename=filename)
-
-        caption = f"Generated with `{image_model}`"
-        await new_msg.reply(content=caption, file=discord_file)
-        return True
-
-    except Exception:
-        logging.exception("Error while generating image")
-        await new_msg.reply("Image generation failed. Probably technology being extremely impressive in theory.")
-        return True
-    
 @discord_bot.event
 async def on_ready() -> None:
     if client_id := config.get("client_id"):
@@ -396,19 +392,6 @@ async def on_message(new_msg: discord.Message) -> None:
     is_dm = new_msg.channel.type == discord.ChannelType.private
 
     config = await asyncio.to_thread(get_config)
-
-    image_command = config.get("image_command", "!img")
-    cleaned_for_command = new_msg.content.strip()
-
-    if cleaned_for_command.lower().startswith(image_command.lower()):
-        prompt = cleaned_for_command[len(image_command):].strip()
-        if not prompt:
-            await new_msg.reply(f"Usage: {image_command} <prompt>")
-            return
-
-        handled = await handle_image_command(new_msg, prompt, config)
-        if handled:
-            return
 
     if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
         return
