@@ -77,6 +77,14 @@ httpx_client = httpx.AsyncClient()
 
 summaries_db = sqlite3.connect("summaries.db", check_same_thread=False)
 summaries_db.execute("""
+    CREATE TABLE IF NOT EXISTS notes (
+        scope_id INTEGER,
+        key TEXT,
+        value TEXT,
+        PRIMARY KEY (scope_id, key)
+    )
+""")
+summaries_db.execute("""
     CREATE TABLE IF NOT EXISTS summaries (
         channel_id INTEGER PRIMARY KEY,
         cut_msg_id INTEGER,
@@ -188,6 +196,68 @@ DISCORD_TOOLS = [
                     "prompt": {"type": "string", "description": "Detailed description of the image to generate"},
                 },
                 "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_timer",
+            "description": "Set a countdown timer that posts a pinned message in the channel and notifies users when it expires. Others can react 🔔 to also be pinged.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "duration_seconds": {"type": "integer", "description": "Timer duration in seconds"},
+                    "label": {"type": "string", "description": "What the timer is for (e.g. 'Pizza in oven', 'Game break')"},
+                    "notify_user_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Discord user IDs to ping when done. Always include the user who asked.",
+                    },
+                },
+                "required": ["duration_seconds", "label"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember",
+            "description": "Store a persistent note or fact for this server. Use a short descriptive key.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Short identifier (e.g. 'dnd_schedule', 'pizza_order')"},
+                    "value": {"type": "string", "description": "The content to remember"},
+                },
+                "required": ["key", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall",
+            "description": "Retrieve stored notes for this server. Omit key to list all notes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Key to look up. Omit to list all."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "forget",
+            "description": "Delete a stored note for this server.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Key of the note to delete"},
+                },
+                "required": ["key"],
             },
         },
     },
@@ -305,6 +375,82 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
                 return f"[Live web search results for: {query}]\n\n{content}\n\n[End of web search results. Present these findings directly to the user without disclaimers about browsing ability.]"
             except RateLimitError:
                 return "Web search rate limit reached. Answer from your training data instead."
+
+        if name == "set_timer":
+            duration = max(1, int(args.get("duration_seconds", 60)))
+            label = args.get("label", "Timer")
+            notify_ids = set(int(uid) for uid in args.get("notify_user_ids", []) if str(uid).isdigit())
+            notify_ids.add(msg.author.id)
+
+            if duration >= 3600:
+                h, rem = divmod(duration, 3600)
+                duration_str = f"{h}h {rem // 60}m" if rem else f"{h}h"
+            elif duration >= 60:
+                m, s = divmod(duration, 60)
+                duration_str = f"{m}m {s}s" if s else f"{m}m"
+            else:
+                duration_str = f"{duration}s"
+
+            mentions = " ".join(f"<@{uid}>" for uid in notify_ids)
+            timer_msg = await msg.channel.send(
+                f"⏱ **{label}** — {duration_str}\n{mentions} will be notified. React 🔔 to also get pinged."
+            )
+            try:
+                await timer_msg.pin()
+            except discord.Forbidden:
+                pass
+
+            async def _fire(channel=msg.channel, tmsg=timer_msg, lbl=label, pings=notify_ids, dur=duration):
+                await asyncio.sleep(dur)
+                try:
+                    refreshed = await channel.fetch_message(tmsg.id)
+                    for reaction in refreshed.reactions:
+                        if str(reaction.emoji) == "🔔":
+                            async for user in reaction.users():
+                                if not user.bot:
+                                    pings.add(user.id)
+                    await refreshed.unpin()
+                except Exception:
+                    pass
+                all_mentions = " ".join(f"<@{uid}>" for uid in pings)
+                await channel.send(f"⏰ {all_mentions} **{lbl}** is done!")
+
+            asyncio.create_task(_fire())
+            return f"Timer set: {label} ({duration_str}). Pinned in channel."
+
+        scope_id = msg.guild.id if msg.guild else msg.channel.id
+
+        if name == "remember":
+            key = args.get("key", "").strip().lower()
+            value = args.get("value", "").strip()
+            if not key or not value:
+                return "Need both a key and a value."
+            summaries_db.execute(
+                "INSERT OR REPLACE INTO notes (scope_id, key, value) VALUES (?, ?, ?)",
+                (scope_id, key, value),
+            )
+            summaries_db.commit()
+            return f"Remembered '{key}'."
+
+        if name == "recall":
+            key = args.get("key", "").strip().lower()
+            if key:
+                row = summaries_db.execute(
+                    "SELECT value FROM notes WHERE scope_id = ? AND key = ?", (scope_id, key)
+                ).fetchone()
+                return row[0] if row else f"Nothing stored for '{key}'."
+            rows = summaries_db.execute(
+                "SELECT key, value FROM notes WHERE scope_id = ? ORDER BY key", (scope_id,)
+            ).fetchall()
+            if not rows:
+                return "No notes stored for this server."
+            return "\n".join(f"{k}: {v}" for k, v in rows)
+
+        if name == "forget":
+            key = args.get("key", "").strip().lower()
+            summaries_db.execute("DELETE FROM notes WHERE scope_id = ? AND key = ?", (scope_id, key))
+            summaries_db.commit()
+            return f"Forgot '{key}'."
 
         return f"Unknown tool: {name}"
 
