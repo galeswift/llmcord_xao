@@ -2,9 +2,7 @@ import asyncio
 import base64
 import io
 import json
-import os
 import sqlite3
-import subprocess
 from base64 import b64encode
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -36,31 +34,6 @@ def resize_for_vision(data: bytes) -> tuple[bytes, str]:
     img.save(buf, format="JPEG", quality=85)
     return buf.getvalue(), "image/jpeg"
 
-
-def get_current_commit_info() -> tuple[str | None, str | None]:
-    """Returns (sha, message). Checks Railway env vars first, falls back to git subprocess."""
-    sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA")
-    message = os.environ.get("RAILWAY_GIT_COMMIT_MESSAGE")
-    if sha and message:
-        return sha, message
-    try:
-        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True).strip()
-        message = subprocess.check_output(["git", "log", "-1", "--pretty=format:%s"], stderr=subprocess.DEVNULL, text=True).strip()
-        return sha, message
-    except Exception:
-        return None, None
-
-
-def get_commits_since(since_sha: str) -> list[str]:
-    """Returns commit subject lines between since_sha and HEAD via git log."""
-    try:
-        out = subprocess.check_output(
-            ["git", "log", f"{since_sha}..HEAD", "--pretty=format:%s", "--no-merges"],
-            stderr=subprocess.DEVNULL, text=True,
-        ).strip()
-        return [line for line in out.splitlines() if line]
-    except Exception:
-        return []
 
 EMBED_COLOR_COMPLETE = discord.Color.dark_green()
 EMBED_COLOR_INCOMPLETE = discord.Color.orange()
@@ -572,72 +545,12 @@ async def model_autocomplete(interaction: discord.Interaction, curr_str: str) ->
 
     return choices[:25]
 
-_startup_announced = False
-
 @discord_bot.event
 async def on_ready() -> None:
-    global _startup_announced
-
     if client_id := config.get("client_id"):
         logging.info(f"\n\nBOT INVITE URL:\nhttps://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot\n")
 
     await discord_bot.tree.sync()
-
-    if _startup_announced:
-        return
-    _startup_announced = True
-
-    cfg = get_config()
-    blocked_channel_ids = set(cfg["permissions"]["channels"]["blocked_ids"])
-    allowed_channel_ids = set(cfg["permissions"]["channels"]["allowed_ids"])
-
-    current_sha, current_message = get_current_commit_info()
-    row = summaries_db.execute("SELECT value FROM notes WHERE scope_id = 0 AND key = 'last_deploy_commit'").fetchone()
-    last_sha = row[0] if row else None
-
-    if last_sha and last_sha != current_sha:
-        commits = get_commits_since(last_sha)
-        if commits:
-            changes = "\n".join(f"• {c}" for c in commits)
-        elif current_message:
-            changes = f"• {current_message}"
-        else:
-            changes = ""
-        announcement = f"👋 Back online! Here's what changed:\n{changes}" if changes else "👋 Back online!"
-    else:
-        announcement = "👋 Back online!"
-
-    if current_sha:
-        summaries_db.execute(
-            "INSERT OR REPLACE INTO notes (scope_id, key, value) VALUES (0, 'last_deploy_commit', ?)",
-            (current_sha,),
-        )
-        summaries_db.commit()
-
-    announce_channels: list[discord.TextChannel] = []
-    if allowed_channel_ids:
-        for cid in allowed_channel_ids:
-            if cid not in blocked_channel_ids:
-                ch = discord_bot.get_channel(cid)
-                if isinstance(ch, discord.TextChannel):
-                    announce_channels.append(ch)
-    else:
-        known_ids = [r[0] for r in summaries_db.execute("SELECT channel_id FROM summaries").fetchall()]
-        for cid in known_ids:
-            if cid not in blocked_channel_ids:
-                ch = discord_bot.get_channel(cid)
-                if isinstance(ch, discord.TextChannel):
-                    announce_channels.append(ch)
-        if not announce_channels:
-            for guild in discord_bot.guilds:
-                if guild.system_channel and guild.system_channel.id not in blocked_channel_ids:
-                    announce_channels.append(guild.system_channel)
-
-    for channel in announce_channels:
-        try:
-            await channel.send(announcement)
-        except discord.Forbidden:
-            pass
 
 
 @discord_bot.event
