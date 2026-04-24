@@ -4,7 +4,6 @@ import io
 import json
 import os
 import sqlite3
-import struct
 import subprocess
 from base64 import b64encode
 from dataclasses import dataclass, field
@@ -18,6 +17,7 @@ from discord.ext import commands
 from discord.ui import LayoutView, TextDisplay
 import httpx
 from openai import AsyncOpenAI, RateLimitError
+from PIL import Image
 import yaml
 
 logging.basicConfig(
@@ -28,24 +28,13 @@ logging.basicConfig(
 VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "llama", "llava", "mistral", "o3", "o4", "vision", "vl")
 
 
-def detect_image_type(data: bytes) -> str | None:
-    if data[:8] == b'\x89PNG\r\n\x1a\n':
-        return "image/png"
-    if data[:3] == b'\xff\xd8\xff':
-        return "image/jpeg"
-    if data[:6] in (b'GIF87a', b'GIF89a'):
-        return "image/gif"
-    return None
-
-
-def image_too_large(data: bytes, actual_type: str, max_bytes: int = 2 * 1024 * 1024, max_dimension: int = 1280) -> bool:
-    if len(data) > max_bytes:
-        return True
-    if actual_type == "image/png" and len(data) >= 24:
-        w, h = struct.unpack(">II", data[16:24])
-        if w > max_dimension or h > max_dimension:
-            return True
-    return False
+def resize_for_vision(data: bytes) -> tuple[bytes, str]:
+    """Resize any image to 512x512 JPEG for consistent vision token cost."""
+    img = Image.open(io.BytesIO(data)).convert("RGB")
+    img = img.resize((512, 512), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return buf.getvalue(), "image/jpeg"
 
 
 def get_current_commit_info() -> tuple[str | None, str | None]:
@@ -738,10 +727,11 @@ async def on_message(new_msg: discord.Message) -> None:
                 for att, resp in zip(good_attachments, attachment_responses):
                     if not att.content_type.startswith("image"):
                         continue
-                    actual_type = detect_image_type(resp.content)
-                    if not actual_type or image_too_large(resp.content, actual_type):
+                    try:
+                        img_data, img_type = resize_for_vision(resp.content)
+                    except Exception:
                         continue
-                    reply_images.append(dict(type="image_url", image_url=dict(url=f"data:{actual_type};base64,{b64encode(resp.content).decode('utf-8')}")))
+                    reply_images.append(dict(type="image_url", image_url=dict(url=f"data:{img_type};base64,{b64encode(img_data).decode('utf-8')}")))
                 curr_node.images = reply_images
 
                 if curr_node.role == "user" and (curr_node.text or curr_node.images):
@@ -821,14 +811,11 @@ async def on_message(new_msg: discord.Message) -> None:
                         break
                     if not att.content_type.startswith("image"):
                         continue
-                    actual_type = detect_image_type(resp.content)
-                    if not actual_type:
+                    try:
+                        img_data, img_type = resize_for_vision(resp.content)
+                    except Exception:
                         continue
-                    if image_too_large(resp.content, actual_type):
-                        w, h = (struct.unpack(">II", resp.content[16:24]) if actual_type == "image/png" and len(resp.content) >= 24 else (0, 0))
-                        logging.info(f"[img] skip {att.filename}: {len(resp.content)//1024}KB {w}x{h}")
-                        continue
-                    images.append(dict(type="image_url", image_url=dict(url=f"data:{actual_type};base64,{b64encode(resp.content).decode('utf-8')}")))
+                    images.append(dict(type="image_url", image_url=dict(url=f"data:{img_type};base64,{b64encode(img_data).decode('utf-8')}")))
                     context_images_used += 1
 
             if role == "user" and (text or images):
