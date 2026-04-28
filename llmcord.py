@@ -698,47 +698,50 @@ async def on_message(new_msg: discord.Message) -> None:
 
     if (channel_context_count := config.get("channel_context_messages", 0)) > 0 and not is_dm:
         context_images_used = 0
-        async for msg in new_msg.channel.history(before=new_msg, limit=channel_context_count):
-            if msg.id in chain_msg_ids or (msg.author.bot and msg.author != discord_bot.user):
-                continue
+        try:
+            async for msg in new_msg.channel.history(before=new_msg, limit=channel_context_count):
+                if msg.id in chain_msg_ids or (msg.author.bot and msg.author != discord_bot.user):
+                    continue
 
-            role = "assistant" if msg.author == discord_bot.user else "user"
+                role = "assistant" if msg.author == discord_bot.user else "user"
 
-            text = msg.content.removeprefix(discord_bot.user.mention).strip()
-            if not text:
-                text = next((e.description for e in msg.embeds if e.description), "")
-            if not text:
-                text = next((c.content for c in msg.components if c.type == discord.ComponentType.text_display), "")
+                text = msg.content.removeprefix(discord_bot.user.mention).strip()
+                if not text:
+                    text = next((e.description for e in msg.embeds if e.description), "")
+                if not text:
+                    text = next((c.content for c in msg.components if c.type == discord.ComponentType.text_display), "")
 
-            good_attachments = [att for att in msg.attachments if att.content_type and any(att.content_type.startswith(x) for x in ("text", "image"))]
-            att_responses = await asyncio.gather(*[httpx_client.get(att.url) for att in good_attachments])
+                good_attachments = [att for att in msg.attachments if att.content_type and any(att.content_type.startswith(x) for x in ("text", "image"))]
+                att_responses = await asyncio.gather(*[httpx_client.get(att.url) for att in good_attachments])
 
-            for att, resp in zip(good_attachments, att_responses):
-                if att.content_type.startswith("text"):
-                    text += ("\n" if text else "") + resp.text
-
-            images = []
-            if accept_images:
                 for att, resp in zip(good_attachments, att_responses):
-                    if context_images_used >= max_images:
-                        break
-                    if not att.content_type.startswith("image"):
-                        continue
-                    try:
-                        img_data, img_type = resize_for_vision(resp.content)
-                    except Exception:
-                        continue
-                    images.append(dict(type="image_url", image_url=dict(url=f"data:{img_type};base64,{b64encode(img_data).decode('utf-8')}")))
-                    context_images_used += 1
+                    if att.content_type.startswith("text"):
+                        text += ("\n" if text else "") + resp.text
 
-            if role == "user" and (text or images):
-                text = f"<@{msg.author.id}>: {text}"
+                images = []
+                if accept_images:
+                    for att, resp in zip(good_attachments, att_responses):
+                        if context_images_used >= max_images:
+                            break
+                        if not att.content_type.startswith("image"):
+                            continue
+                        try:
+                            img_data, img_type = resize_for_vision(resp.content)
+                        except Exception:
+                            continue
+                        images.append(dict(type="image_url", image_url=dict(url=f"data:{img_type};base64,{b64encode(img_data).decode('utf-8')}")))
+                        context_images_used += 1
 
-            if not text and not images:
-                continue
+                if role == "user" and (text or images):
+                    text = f"<@{msg.author.id}>: {text}"
 
-            content = ([dict(type="text", text=text[:max_text])] + images) if images else text[:max_text]
-            messages.append(dict(role=role, content=content))
+                if not text and not images:
+                    continue
+
+                content = ([dict(type="text", text=text[:max_text])] + images) if images else text[:max_text]
+                messages.append(dict(role=role, content=content))
+        except Exception:
+            logging.warning("Failed to fetch channel history for context, proceeding without it")
 
     if curr_msg is not None and not is_dm:
         try:
