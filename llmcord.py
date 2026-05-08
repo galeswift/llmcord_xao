@@ -456,49 +456,73 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
         return f"{name} failed: {e}"
 
 
-async def get_or_generate_summary(channel_id: int, cut_msg: discord.Message, openai_client: AsyncOpenAI, model: str) -> str:
+_new_msgs_since_summary: dict[int, int] = {}
+SUMMARY_UPDATE_THRESHOLD = 20
+
+async def get_channel_summary(channel: discord.TextChannel, openai_client: AsyncOpenAI, model: str) -> str:
+    """Return a rolling summary of channel history, refreshing every SUMMARY_UPDATE_THRESHOLD messages."""
+    channel_id = channel.id
+    _new_msgs_since_summary[channel_id] = _new_msgs_since_summary.get(channel_id, 0) + 1
+
     row = summaries_db.execute(
         "SELECT cut_msg_id, summary FROM summaries WHERE channel_id = ?", (channel_id,)
     ).fetchone()
+    existing_summary = row[1] if row else None
+    last_msg_id = row[0] if row else None
 
-    if row and row[0] == cut_msg.id:
-        return row[1]
+    if _new_msgs_since_summary[channel_id] < SUMMARY_UPDATE_THRESHOLD and existing_summary is not None:
+        return existing_summary
 
-    # Collect cut-off messages from the msg_nodes cache (oldest first)
-    lines = []
-    msg = cut_msg
-    while msg is not None and len(lines) < 50:
-        node = msg_nodes.get(msg.id)
-        if not node:
-            break
-        if node.text:
-            lines.append(node.text)
-        msg = node.parent_msg
-    lines.reverse()
+    _new_msgs_since_summary[channel_id] = 0
+
+    try:
+        if last_msg_id:
+            history_iter = channel.history(after=discord.Object(id=last_msg_id), limit=100)
+        else:
+            history_iter = channel.history(limit=200)
+
+        lines = []
+        msg_ids = []
+        async for m in history_iter:
+            if m.author.bot and m.author != discord_bot.user:
+                continue
+            if m.content:
+                author = "Bot" if m.author == discord_bot.user else m.author.display_name
+                lines.append(f"{author}: {m.content}")
+            msg_ids.append(m.id)
+
+        if not last_msg_id:
+            lines.reverse()
+    except Exception:
+        return existing_summary or ""
 
     if not lines:
-        return ""
+        return existing_summary or ""
 
-    prior = f"Prior summary to build on:\n{row[1]}\n\n" if row else ""
+    newest_id = max(msg_ids) if msg_ids else last_msg_id
+    prior = f"Prior summary:\n{existing_summary}\n\n" if existing_summary else ""
     prompt = (
-        f"{prior}Summarize the following Discord conversation concisely, "
-        f"preserving key facts, decisions, and context.\n\n"
+        f"{prior}Summarize this Discord conversation concisely. Preserve key facts, "
+        f"decisions, ongoing topics, and important context.\n\n"
         + "\n".join(lines)
     )
 
-    response = await openai_client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        stream=False,
-    )
-    summary = response.choices[0].message.content.strip()
+    try:
+        resp = await openai_client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            stream=False,
+        )
+        new_summary = resp.choices[0].message.content.strip()
+    except Exception:
+        return existing_summary or ""
 
     summaries_db.execute(
         "INSERT OR REPLACE INTO summaries (channel_id, cut_msg_id, summary) VALUES (?, ?, ?)",
-        (channel_id, cut_msg.id, summary),
+        (channel_id, newest_id, new_summary),
     )
     summaries_db.commit()
-    return summary
+    return new_summary
 
 
 @dataclass
@@ -743,13 +767,13 @@ async def on_message(new_msg: discord.Message) -> None:
         except Exception:
             logging.warning("Failed to fetch channel history for context, proceeding without it")
 
-    if curr_msg is not None and not is_dm:
+    if not is_dm:
         try:
-            summary = await get_or_generate_summary(new_msg.channel.id, curr_msg, openai_client, model)
+            summary = await get_channel_summary(new_msg.channel, openai_client, model)
             if summary:
                 messages.append({"role": "system", "content": f"Summary of earlier conversation:\n{summary}"})
         except Exception:
-            logging.exception("Failed to generate conversation summary")
+            logging.exception("Failed to get channel summary")
 
     if system_prompt := config.get("system_prompt"):
         now = datetime.now().astimezone()
