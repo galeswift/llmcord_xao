@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import json
+import random
 import sqlite3
 from base64 import b64encode
 from dataclasses import dataclass, field
@@ -27,9 +28,9 @@ VISION_MODEL_TAGS = ("claude", "gemini", "gemma", "gpt-4", "gpt-5", "grok-4", "l
 
 
 def resize_for_vision(data: bytes) -> tuple[bytes, str]:
-    """Resize any image to 512x512 JPEG for consistent vision token cost."""
+    """Downscale any image to fit within 512x512 JPEG, preserving aspect ratio."""
     img = Image.open(io.BytesIO(data)).convert("RGB")
-    img = img.resize((512, 512), Image.LANCZOS)
+    img.thumbnail((512, 512), Image.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=85)
     return buf.getvalue(), "image/jpeg"
@@ -58,12 +59,43 @@ curr_model = next(iter(config["models"]))
 msg_nodes = {}
 last_task_time = 0
 
+# Per-channel serialization: one generation at a time. Messages that arrive while the bot
+# is busy get queued and answered together in a single combined reply.
+_channel_locks: dict[int, asyncio.Lock] = {}
+_pending_msgs: dict[int, list[discord.Message]] = {}
+
+QUEUE_ACK_REPLIES = (
+    "hold on, one at a time — actually no, don't bother. I'll answer everyone at once when I'm done here. sit tight.",
+    "I'm mid-answer. queueing you up — everyone gets replies in one go.",
+    "busy. your message is in the pile, I'll get to all of it at once. hang tight.",
+    "cool, a line is forming. I'll batch everyone's questions into one reply, gimme a sec.",
+)
+
 intents = discord.Intents.default()
 intents.message_content = True
 activity = discord.CustomActivity(name=(config.get("status_message") or "github.com/jakobdylanc/llmcord")[:128])
 discord_bot = commands.Bot(intents=intents, activity=activity, command_prefix=None)
 
 httpx_client = httpx.AsyncClient()
+
+# asyncio only holds weak references to tasks; keep strong refs so background work isn't GC'd mid-flight
+_background_tasks: set[asyncio.Task] = set()
+
+
+def fire_and_forget(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+_openai_clients: dict[tuple[str, str], AsyncOpenAI] = {}
+
+
+def get_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
+    key = (base_url, api_key)
+    if key not in _openai_clients:
+        _openai_clients[key] = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    return _openai_clients[key]
 
 summaries_db = sqlite3.connect("summaries.db", check_same_thread=False)
 summaries_db.execute("""
@@ -328,10 +360,7 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
             api_key = provider_config.get("api_key")
             if not api_key:
                 return "No OpenAI API key configured for image generation."
-            image_client = AsyncOpenAI(
-                base_url=provider_config.get("base_url", "https://api.openai.com/v1"),
-                api_key=api_key,
-            )
+            image_client = get_openai_client(provider_config.get("base_url", "https://api.openai.com/v1"), api_key)
             result = await image_client.images.generate(
                 model=config.get("image_model", "gpt-image-2"),
                 prompt=prompt,
@@ -350,10 +379,7 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
             search_model_key = config.get("search_model", "openai/gpt-4o-mini-search-preview")
             search_provider, search_model_name = search_model_key.split("/", 1)
             search_provider_config = config["providers"].get(search_provider, {})
-            search_client = AsyncOpenAI(
-                base_url=search_provider_config.get("base_url", "https://api.openai.com/v1"),
-                api_key=search_provider_config.get("api_key", "sk-no-key-required"),
-            )
+            search_client = get_openai_client(search_provider_config.get("base_url", "https://api.openai.com/v1"), search_provider_config.get("api_key", "sk-no-key-required"))
             try:
                 response = await search_client.chat.completions.create(
                     model=search_model_name,
@@ -410,7 +436,7 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
                 all_mentions = " ".join(f"<@{uid}>" for uid in pings)
                 await channel.send(f"⏰ {all_mentions} **{lbl}** is done!")
 
-            asyncio.create_task(_fire())
+            fire_and_forget(_fire())
             return f"Timer set: {label} ({duration_str}). Pinned in channel."
 
         scope_id = msg.guild.id if msg.guild else msg.channel.id
@@ -457,10 +483,11 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
 
 
 _new_msgs_since_summary: dict[int, int] = {}
+_summary_refreshing: set[int] = set()
 SUMMARY_UPDATE_THRESHOLD = 20
 
-async def get_channel_summary(channel: discord.TextChannel, openai_client: AsyncOpenAI, model: str) -> str:
-    """Return a rolling summary of channel history, refreshing every SUMMARY_UPDATE_THRESHOLD messages."""
+def get_channel_summary(channel: discord.TextChannel, openai_client: AsyncOpenAI, model: str) -> str:
+    """Return the cached rolling summary immediately; refresh it in the background every SUMMARY_UPDATE_THRESHOLD bot replies."""
     channel_id = channel.id
     _new_msgs_since_summary[channel_id] = _new_msgs_since_summary.get(channel_id, 0) + 1
 
@@ -470,11 +497,18 @@ async def get_channel_summary(channel: discord.TextChannel, openai_client: Async
     existing_summary = row[1] if row else None
     last_msg_id = row[0] if row else None
 
-    if _new_msgs_since_summary[channel_id] < SUMMARY_UPDATE_THRESHOLD and existing_summary is not None:
-        return existing_summary
+    needs_refresh = existing_summary is None or _new_msgs_since_summary[channel_id] >= SUMMARY_UPDATE_THRESHOLD
+    if needs_refresh and channel_id not in _summary_refreshing:
+        _new_msgs_since_summary[channel_id] = 0
+        _summary_refreshing.add(channel_id)
+        fire_and_forget(_refresh_channel_summary(channel, openai_client, model, existing_summary, last_msg_id))
 
-    _new_msgs_since_summary[channel_id] = 0
+    return existing_summary or ""
 
+
+async def _refresh_channel_summary(
+    channel: discord.TextChannel, openai_client: AsyncOpenAI, model: str, existing_summary: Optional[str], last_msg_id: Optional[int]
+) -> None:
     try:
         if last_msg_id:
             history_iter = channel.history(after=discord.Object(id=last_msg_id), limit=100)
@@ -493,36 +527,34 @@ async def get_channel_summary(channel: discord.TextChannel, openai_client: Async
 
         if not last_msg_id:
             lines.reverse()
-    except Exception:
-        return existing_summary or ""
 
-    if not lines:
-        return existing_summary or ""
+        if not lines:
+            return
 
-    newest_id = max(msg_ids) if msg_ids else last_msg_id
-    prior = f"Prior summary:\n{existing_summary}\n\n" if existing_summary else ""
-    prompt = (
-        f"{prior}Summarize this Discord conversation concisely. Preserve key facts, "
-        f"decisions, ongoing topics, and important context.\n\n"
-        + "\n".join(lines)
-    )
+        newest_id = max(msg_ids) if msg_ids else last_msg_id
+        prior = f"Prior summary:\n{existing_summary}\n\n" if existing_summary else ""
+        prompt = (
+            f"{prior}Summarize this Discord conversation concisely. Preserve key facts, "
+            f"decisions, ongoing topics, and important context.\n\n"
+            + "\n".join(lines)
+        )
 
-    try:
         resp = await openai_client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             stream=False,
         )
         new_summary = resp.choices[0].message.content.strip()
-    except Exception:
-        return existing_summary or ""
 
-    summaries_db.execute(
-        "INSERT OR REPLACE INTO summaries (channel_id, cut_msg_id, summary) VALUES (?, ?, ?)",
-        (channel_id, newest_id, new_summary),
-    )
-    summaries_db.commit()
-    return new_summary
+        summaries_db.execute(
+            "INSERT OR REPLACE INTO summaries (channel_id, cut_msg_id, summary) VALUES (?, ?, ?)",
+            (channel.id, newest_id, new_summary),
+        )
+        summaries_db.commit()
+    except Exception:
+        logging.exception("Failed to refresh channel summary")
+    finally:
+        _summary_refreshing.discard(channel.id)
 
 
 @dataclass
@@ -536,8 +568,43 @@ class MsgNode:
     fetch_parent_failed: bool = False
 
     parent_msg: Optional[discord.Message] = None
+    parent_resolved: bool = False
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+async def populate_node(node: MsgNode, msg: discord.Message) -> None:
+    """Fill a node's role/text/images from a Discord message. Attachment downloads and image resizing happen once per message, then live in the msg_nodes cache."""
+    cleaned_content = msg.content.removeprefix(discord_bot.user.mention).lstrip()
+
+    good_attachments = [att for att in msg.attachments if att.content_type and any(att.content_type.startswith(x) for x in ("text", "image"))]
+    attachment_responses = await asyncio.gather(*[httpx_client.get(att.url) for att in good_attachments], return_exceptions=True)
+    fetched = [(att, resp) for att, resp in zip(good_attachments, attachment_responses) if not isinstance(resp, BaseException)]
+
+    node.role = "assistant" if msg.author == discord_bot.user else "user"
+
+    node.text = "\n".join(
+        ([cleaned_content] if cleaned_content else [])
+        + ["\n".join(filter(None, (embed.title, embed.description, embed.footer.text))) for embed in msg.embeds]
+        + [component.content for component in msg.components if component.type == discord.ComponentType.text_display]
+        + [resp.text for att, resp in fetched if att.content_type.startswith("text")]
+    )
+
+    images = []
+    for att, resp in fetched:
+        if not att.content_type.startswith("image"):
+            continue
+        try:
+            img_data, img_type = await asyncio.to_thread(resize_for_vision, resp.content)
+        except Exception:
+            continue
+        images.append(dict(type="image_url", image_url=dict(url=f"data:{img_type};base64,{b64encode(img_data).decode('utf-8')}")))
+    node.images = images
+
+    if node.role == "user" and (node.text or node.images):
+        node.text = f"<@{msg.author.id}>: {node.text}"
+
+    node.has_bad_attachments = len(msg.attachments) > len(fetched)
 
 
 @discord_bot.tree.command(name="model", description="View or switch the current model")
@@ -579,8 +646,6 @@ async def on_ready() -> None:
 
 @discord_bot.event
 async def on_message(new_msg: discord.Message) -> None:
-    global last_task_time
-
     is_dm = new_msg.channel.type == discord.ChannelType.private
 
     config = await asyncio.to_thread(get_config)
@@ -612,6 +677,36 @@ async def on_message(new_msg: discord.Message) -> None:
     if is_bad_user or is_bad_channel:
         return
 
+    channel_lock = _channel_locks.setdefault(new_msg.channel.id, asyncio.Lock())
+
+    if channel_lock.locked():
+        pending = _pending_msgs.setdefault(new_msg.channel.id, [])
+        pending.append(new_msg)
+        try:
+            if len(pending) == 1:
+                await new_msg.reply(random.choice(QUEUE_ACK_REPLIES), silent=True)
+            else:
+                await new_msg.add_reaction("⏳")
+        except discord.HTTPException:
+            pass
+        return
+
+    async with channel_lock:
+        batch = [new_msg]
+        while batch:
+            try:
+                await generate_response(batch, config)
+            except Exception:
+                logging.exception("Error processing message batch")
+            batch = _pending_msgs.pop(new_msg.channel.id, [])
+
+
+async def generate_response(batch: list[discord.Message], config: dict[str, Any]) -> None:
+    global last_task_time
+
+    new_msg = batch[-1]
+    is_dm = new_msg.channel.type == discord.ChannelType.private
+
     provider_slash_model = curr_model
     provider, model = provider_slash_model.removesuffix(":vision").split("/", 1)
 
@@ -619,7 +714,7 @@ async def on_message(new_msg: discord.Message) -> None:
 
     base_url = provider_config["base_url"]
     api_key = provider_config.get("api_key", "sk-no-key-required")
-    openai_client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    openai_client = get_openai_client(base_url, api_key)
 
     model_parameters = config["models"].get(provider_slash_model, None)
 
@@ -645,36 +740,10 @@ async def on_message(new_msg: discord.Message) -> None:
 
         async with curr_node.lock:
             if curr_node.text == None:
-                cleaned_content = curr_msg.content.removeprefix(discord_bot.user.mention).lstrip()
+                await populate_node(curr_node, curr_msg)
 
-                good_attachments = [att for att in curr_msg.attachments if att.content_type and any(att.content_type.startswith(x) for x in ("text", "image"))]
-
-                attachment_responses = await asyncio.gather(*[httpx_client.get(att.url) for att in good_attachments])
-
-                curr_node.role = "assistant" if curr_msg.author == discord_bot.user else "user"
-
-                curr_node.text = "\n".join(
-                    ([cleaned_content] if cleaned_content else [])
-                    + ["\n".join(filter(None, (embed.title, embed.description, embed.footer.text))) for embed in curr_msg.embeds]
-                    + [component.content for component in curr_msg.components if component.type == discord.ComponentType.text_display]
-                    + [resp.text for att, resp in zip(good_attachments, attachment_responses) if att.content_type.startswith("text")]
-                )
-
-                reply_images = []
-                for att, resp in zip(good_attachments, attachment_responses):
-                    if not att.content_type.startswith("image"):
-                        continue
-                    try:
-                        img_data, img_type = resize_for_vision(resp.content)
-                    except Exception:
-                        continue
-                    reply_images.append(dict(type="image_url", image_url=dict(url=f"data:{img_type};base64,{b64encode(img_data).decode('utf-8')}")))
-                curr_node.images = reply_images
-
-                if curr_node.role == "user" and (curr_node.text or curr_node.images):
-                    curr_node.text = f"<@{curr_msg.author.id}>: {curr_node.text}"
-
-                curr_node.has_bad_attachments = len(curr_msg.attachments) > len(good_attachments)
+            if not curr_node.parent_resolved:
+                curr_node.parent_resolved = True
 
                 try:
                     if (
@@ -718,7 +787,27 @@ async def on_message(new_msg: discord.Message) -> None:
 
             curr_msg = curr_node.parent_msg
 
-    logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}):\n{new_msg.content}")
+    logging.info(f"Message received (user ID: {new_msg.author.id}, attachments: {len(new_msg.attachments)}, conversation length: {len(messages)}, batch size: {len(batch)}):\n{new_msg.content}")
+
+    # Messages that queued up while the bot was busy: include them all and answer them in one reply
+    if extra_msgs := batch[:-1]:
+        for m in reversed(extra_msgs):  # messages list is newest-first
+            extra_node = msg_nodes.setdefault(m.id, MsgNode())
+            async with extra_node.lock:
+                if extra_node.text == None:
+                    await populate_node(extra_node, m)
+                if extra_node.text or extra_node.images:
+                    if extra_node.images[:max_images]:
+                        content = [dict(type="text", text=extra_node.text[:max_text])] + extra_node.images[:max_images]
+                    else:
+                        content = extra_node.text[:max_text]
+                    messages.append(dict(content=content, role=extra_node.role))
+            chain_msg_ids.add(m.id)
+
+        messages.insert(0, {"role": "system", "content": (
+            f"{len(batch)} messages arrived while you were busy with an earlier reply, and they are all still unanswered. "
+            "Answer ALL of them in this single response. Address each person by their <@ID> mention so it's clear which answer belongs to whom."
+        )})
 
     if (channel_context_count := config.get("channel_context_messages", 0)) > 0 and not is_dm:
         context_images_used = 0
@@ -727,49 +816,26 @@ async def on_message(new_msg: discord.Message) -> None:
                 if msg.id in chain_msg_ids or (msg.author.bot and msg.author != discord_bot.user):
                     continue
 
-                role = "assistant" if msg.author == discord_bot.user else "user"
+                node = msg_nodes.setdefault(msg.id, MsgNode())
+                async with node.lock:
+                    if node.text == None:
+                        await populate_node(node, msg)
+                    text = node.text
+                    images = node.images[: max(0, max_images - context_images_used)] if accept_images else []
 
-                text = msg.content.removeprefix(discord_bot.user.mention).strip()
-                if not text:
-                    text = next((e.description for e in msg.embeds if e.description), "")
-                if not text:
-                    text = next((c.content for c in msg.components if c.type == discord.ComponentType.text_display), "")
-
-                good_attachments = [att for att in msg.attachments if att.content_type and any(att.content_type.startswith(x) for x in ("text", "image"))]
-                att_responses = await asyncio.gather(*[httpx_client.get(att.url) for att in good_attachments])
-
-                for att, resp in zip(good_attachments, att_responses):
-                    if att.content_type.startswith("text"):
-                        text += ("\n" if text else "") + resp.text
-
-                images = []
-                if accept_images:
-                    for att, resp in zip(good_attachments, att_responses):
-                        if context_images_used >= max_images:
-                            break
-                        if not att.content_type.startswith("image"):
-                            continue
-                        try:
-                            img_data, img_type = resize_for_vision(resp.content)
-                        except Exception:
-                            continue
-                        images.append(dict(type="image_url", image_url=dict(url=f"data:{img_type};base64,{b64encode(img_data).decode('utf-8')}")))
-                        context_images_used += 1
-
-                if role == "user" and (text or images):
-                    text = f"<@{msg.author.id}>: {text}"
+                context_images_used += len(images)
 
                 if not text and not images:
                     continue
 
                 content = ([dict(type="text", text=text[:max_text])] + images) if images else text[:max_text]
-                messages.append(dict(role=role, content=content))
+                messages.append(dict(role=node.role, content=content))
         except Exception:
             logging.warning("Failed to fetch channel history for context, proceeding without it")
 
     if not is_dm:
         try:
-            summary = await get_channel_summary(new_msg.channel, openai_client, model)
+            summary = get_channel_summary(new_msg.channel, openai_client, model)
             if summary:
                 messages.append({"role": "system", "content": f"Summary of earlier conversation:\n{summary}"})
         except Exception:
@@ -801,7 +867,7 @@ async def on_message(new_msg: discord.Message) -> None:
         response_msg = await reply_target.reply(**reply_kwargs)
         response_msgs.append(response_msg)
 
-        msg_nodes[response_msg.id] = MsgNode(parent_msg=new_msg)
+        msg_nodes[response_msg.id] = MsgNode(parent_msg=new_msg, parent_resolved=True)
         await msg_nodes[response_msg.id].lock.acquire()
 
     tool_call_count = 0
@@ -815,14 +881,14 @@ async def on_message(new_msg: discord.Message) -> None:
                 tool_calls_buffer = {}
                 got_tool_calls = False
 
+                content_before_round = "".join(response_contents)
+
                 active_tools = [t for t in available_tools if not (t["function"]["name"] == "web_search" and web_search_count >= max_web_searches)]
                 openai_kwargs = dict(model=model, messages=api_messages, stream=True, extra_headers=extra_headers, extra_query=extra_query, extra_body=extra_body)
                 if active_tools and tool_call_count < 5:
                     openai_kwargs["tools"] = active_tools
-                    if extra_body and "reasoning_effort" in extra_body:
-                        openai_kwargs["extra_body"] = {k: v for k, v in extra_body.items() if k != "reasoning_effort"} or None
 
-                async for chunk in ([] if got_tool_calls else await openai_client.chat.completions.create(**openai_kwargs)):
+                async for chunk in await openai_client.chat.completions.create(**openai_kwargs):
                     if finish_reason is not None:
                         break
 
@@ -885,6 +951,8 @@ async def on_message(new_msg: discord.Message) -> None:
 
                 if got_tool_calls:
                     tool_call_count += 1
+                    # Text the model streamed before deciding to call tools, so it stays in its own context
+                    round_text = "".join(response_contents)[len(content_before_round):] + (curr_content or "")
                     sorted_tcs = [tool_calls_buffer[i] for i in sorted(tool_calls_buffer.keys())]
                     assistant_tool_calls = [
                         {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": tc["args"]}}
@@ -902,7 +970,7 @@ async def on_message(new_msg: discord.Message) -> None:
                         result = await execute_tool(tc["name"], args, new_msg)
                         tool_result_msgs.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
                     api_messages = api_messages + [
-                        {"role": "assistant", "content": None, "tool_calls": assistant_tool_calls}
+                        {"role": "assistant", "content": round_text or None, "tool_calls": assistant_tool_calls}
                     ] + tool_result_msgs
                 else:
                     break
