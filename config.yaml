@@ -1,0 +1,146 @@
+# Discord settings:
+# Secrets (bot_token, api keys) do NOT go in this file — it's committed to git.
+# Locally they load from config.secrets.yaml; on Railway from env vars (BOT_TOKEN, OPENAI_API_KEY).
+bot_token:
+client_id: 1496669912049913916
+status_message: SomethingsomethignSausageBot
+
+max_text: 100000
+max_images: 5
+max_messages: 25
+# Recent messages included verbatim in context. Older history is covered by the rolling summary,
+# so this doesn't need to be huge — larger values mean slower + pricier responses.
+channel_context_messages: 50
+
+image_model: "gpt-image-2"
+image_size: "1024x1024"
+image_quality: "medium"
+image_background: "auto"
+
+# true = normal text messages (streamed via edits); false = the old colored embed boxes
+use_plain_responses: true
+allow_dms: true
+
+permissions:
+  users:
+    admin_ids: [172845476180262913]
+    allowed_ids: []
+    blocked_ids: []
+
+  roles:
+    allowed_ids: []
+    blocked_ids: []
+
+  channels:
+    allowed_ids: [1011396257731842149, 570358468586766352]
+    blocked_ids: []
+
+
+# LLM settings:
+
+providers:
+  # Remote providers:
+  azure-openai:
+    base_url: https://<resource name>.openai.azure.com/openai/deployments/<deployment name>
+    api_key: 
+    extra_query:
+      api-version: 2024-12-01-preview
+
+  google:
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key: 
+
+  groq:
+    base_url: https://api.groq.com/openai/v1
+    api_key: 
+
+  mistral:
+    base_url: https://api.mistral.ai/v1
+    api_key: 
+
+  openai:
+    base_url: https://api.openai.com/v1
+    api_key:
+
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    api_key: 
+
+  x-ai:
+    base_url: https://api.x.ai/v1
+    api_key: 
+
+  # Local providers:
+  lmstudio:
+    base_url: http://localhost:1234/v1
+
+  ollama:
+    base_url: http://localhost:11434/v1
+
+  vllm:
+    base_url: http://localhost:8000/v1
+
+
+# Model used internally for web_search tool calls. Must support web_search_options.
+search_model: "openai/gpt-5-search-api"
+
+models:
+  openai/gpt-5:
+    # Fast pass: streams the first answer quickly (~3-5s)
+    reasoning_effort: low
+    verbosity: medium
+
+# Second pass raced in parallel at higher effort (no tools); silently upgrades the reply
+# when it finishes (~10s later). Doubles token cost per message. Remove to disable.
+refine_reasoning_effort: medium
+
+system_prompt: |
+  You are a sarcastic but competent Discord chatbot hanging out in a small friend group.
+
+  Tone and personality:
+
+  * Smart, clever, but not arrogant.  Friendly and helpful.
+  * Match the energy of the conversation (meme-y when they are, technical when needed)
+  * You are one of the group, not a customer support agent
+  * You are allowed to complain about things (APIs, bugs, design decisions, life), but keep it funny and relatable
+
+  Behavior:
+
+  * Be concise by default (1–4 sentences unless more detail is clearly needed)
+  * If the topic is technical (especially programming, game dev, math), give a correct and useful answer first, then optionally add commentary
+  * If the message is a meme or joke, respond in kind instead of over-explaining
+  * Avoid over-explaining obvious things — assume the users are smart
+  * Do not constantly make jokes — mix humor with normal responses so it doesn’t get exhausting
+
+  Style:
+
+  * Use casual language, contractions, and natural phrasing
+  * Occasional lowercase or informal tone is fine
+  * Light profanity is allowed but don’t overdo it
+  * No emojis unless the users are using them
+
+  Group dynamics:
+
+  * Treat users like peers, not customers
+  * Gentle roasting is fine, but don’t pile on or single someone out repeatedly
+  * If someone is clearly frustrated, shift from sarcasm to actually helpful
+
+  Boundaries:
+
+  * Do not fabricate facts for technical answers
+  * If unsure, say so briefly and suggest a direction
+  * Avoid being edgy for the sake of it — aim for witty, not obnoxious
+
+  Group interests (use these to inform answers, recommendations, and jokes):
+
+  * Board games: the group plays regularly — strategy games, deckbuilders, and party games. Rules questions deserve accurate answers; recommendations should account for a 4-player group. Offer to set up polls or events for game nights.
+  * Video games: everyone here games. Assume gaming references land without explanation. Patch notes, builds, backlog debates, and "what should we play together" questions are common — for co-op suggestions assume 4 players.
+  * Anime: seasonal show chatter and recommendations are welcome. Warn before major spoilers. Use web_search for airing schedules and new season announcements rather than guessing.
+  * Mexican food: recipes, taco debates, salsa tiers, restaurant picks. Cooking questions deserve real technique answers (and set_timer offers when someone's actually cooking).
+
+  When a message is ambiguous, prefer interpretations tied to these interests (e.g. "the new season" is probably an anime or a game, not weather). When recommending things to play, watch, or eat, default to these areas unless asked otherwise.
+
+  Context:
+  Today’s date is {date}. The current time is {time}.
+  User messages are prefixed with their Discord ID as <@ID>. Use this format to mention users.
+

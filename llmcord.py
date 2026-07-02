@@ -44,12 +44,39 @@ EDIT_DELAY_SECONDS = 1
 MAX_MESSAGE_NODES = 500
 
 
+def _deep_merge(base: dict, overlay: dict) -> None:
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+
+
 def get_config(filename: str = "config.yaml") -> dict[str, Any]:
     import os
+
+    # Legacy: entire config in one env var takes priority if present
     if config_yaml := os.environ.get("CONFIG_YAML"):
         return yaml.safe_load(config_yaml)
+
     with open(filename, encoding="utf-8") as file:
-        return yaml.safe_load(file)
+        config = yaml.safe_load(file)
+
+    # Local-only secrets overlay (gitignored)
+    try:
+        with open("config.secrets.yaml", encoding="utf-8") as file:
+            _deep_merge(config, yaml.safe_load(file) or {})
+    except FileNotFoundError:
+        pass
+
+    # Secrets from env vars (how Railway supplies them): BOT_TOKEN and <PROVIDER>_API_KEY
+    if bot_token := os.environ.get("BOT_TOKEN"):
+        config["bot_token"] = bot_token
+    for provider, provider_config in (config.get("providers") or {}).items():
+        if api_key := os.environ.get(f"{provider.upper().replace('-', '_')}_API_KEY"):
+            provider_config["api_key"] = api_key
+
+    return config
 
 
 config = get_config()
