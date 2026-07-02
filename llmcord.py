@@ -13,7 +13,6 @@ from typing import Any, Literal, Optional
 import discord
 from discord.app_commands import Choice
 from discord.ext import commands
-from discord.ui import LayoutView, TextDisplay
 import httpx
 from openai import AsyncOpenAI, RateLimitError
 from PIL import Image
@@ -69,6 +68,13 @@ QUEUE_ACK_REPLIES = (
     "I'm mid-answer. queueing you up — everyone gets replies in one go.",
     "busy. your message is in the pile, I'll get to all of it at once. hang tight.",
     "cool, a line is forming. I'll batch everyone's questions into one reply, gimme a sec.",
+)
+
+THINKING_REPLIES = (
+    "🤔 gimme a sec...",
+    "thinking...",
+    "hold on, brain's spinning up...",
+    "processing... beep boop.",
 )
 
 intents = discord.Intents.default()
@@ -856,10 +862,9 @@ async def generate_response(batch: list[discord.Message], config: dict[str, Any]
     guild_only_tools = {"create_event", "cancel_event"}
     available_tools = [t for t in DISCORD_TOOLS if not (is_dm and t["function"]["name"] in guild_only_tools)]
 
-    if use_plain_responses := config.get("use_plain_responses", False):
-        max_message_length = 4000
-    else:
-        max_message_length = 4096 - len(STREAMING_INDICATOR)
+    use_plain_responses = config.get("use_plain_responses", False)
+    max_message_length = (2000 if use_plain_responses else 4096) - len(STREAMING_INDICATOR)
+    if not use_plain_responses:
         embed = discord.Embed.from_dict(dict(fields=[dict(name=warning, value="", inline=False) for warning in sorted(user_warnings)]))
 
     async def reply_helper(**reply_kwargs) -> None:
@@ -873,9 +878,23 @@ async def generate_response(batch: list[discord.Message], config: dict[str, Any]
     tool_call_count = 0
     web_search_count = 0
     max_web_searches = config.get("max_web_searches", 1)
+    placeholder_pending = False
+
+    # Optional second pass: same request at higher reasoning effort (no tools), raced in parallel.
+    # Its answer silently replaces the fast answer unless the fast pass used tools.
+    refine_task = None
+    if refine_effort := config.get("refine_reasoning_effort"):
+        refine_body = dict(extra_body or {}, reasoning_effort=refine_effort)
+        refine_task = asyncio.create_task(openai_client.chat.completions.create(
+            model=model, messages=api_messages, stream=False, extra_headers=extra_headers, extra_query=extra_query, extra_body=refine_body,
+        ))
 
     try:
         async with new_msg.channel.typing():
+            if use_plain_responses:
+                await reply_helper(content=random.choice(THINKING_REPLIES), silent=True)
+                placeholder_pending = True
+
             while True:
                 curr_content = finish_reason = None
                 tool_calls_buffer = {}
@@ -929,15 +948,26 @@ async def generate_response(batch: list[discord.Message], config: dict[str, Any]
 
                     response_contents[-1] += new_content
 
-                    if not use_plain_responses:
-                        time_delta = datetime.now().timestamp() - last_task_time
+                    time_delta = datetime.now().timestamp() - last_task_time
 
-                        ready_to_edit = time_delta >= EDIT_DELAY_SECONDS
-                        msg_split_incoming = finish_reason is None and len(response_contents[-1] + curr_content) > max_message_length
-                        is_final_edit = finish_reason is not None or msg_split_incoming
-                        is_good_finish = finish_reason is not None and finish_reason.lower() in ("stop", "end_turn")
+                    ready_to_edit = time_delta >= EDIT_DELAY_SECONDS
+                    msg_split_incoming = finish_reason is None and len(response_contents[-1] + curr_content) > max_message_length
+                    is_final_edit = finish_reason is not None or msg_split_incoming
+                    is_good_finish = finish_reason is not None and finish_reason.lower() in ("stop", "end_turn")
 
-                        if start_next_msg or ready_to_edit or is_final_edit:
+                    if start_next_msg or ready_to_edit or is_final_edit:
+                        if use_plain_responses:
+                            text = response_contents[-1] if is_final_edit else (response_contents[-1] + STREAMING_INDICATOR)
+
+                            if start_next_msg and placeholder_pending:
+                                placeholder_pending = False
+                                await response_msgs[-1].edit(content=text, suppress=True)
+                            elif start_next_msg:
+                                await reply_helper(content=text, silent=True, suppress_embeds=True)
+                            else:
+                                await asyncio.sleep(EDIT_DELAY_SECONDS - time_delta)
+                                await response_msgs[-1].edit(content=text, suppress=True)
+                        else:
                             embed.description = response_contents[-1] if is_final_edit else (response_contents[-1] + STREAMING_INDICATOR)
                             embed.color = EMBED_COLOR_COMPLETE if msg_split_incoming or is_good_finish else EMBED_COLOR_INCOMPLETE
 
@@ -947,7 +977,7 @@ async def generate_response(batch: list[discord.Message], config: dict[str, Any]
                                 await asyncio.sleep(EDIT_DELAY_SECONDS - time_delta)
                                 await response_msgs[-1].edit(embed=embed)
 
-                            last_task_time = datetime.now().timestamp()
+                        last_task_time = datetime.now().timestamp()
 
                 if got_tool_calls:
                     tool_call_count += 1
@@ -975,12 +1005,51 @@ async def generate_response(batch: list[discord.Message], config: dict[str, Any]
                 else:
                     break
 
-            if use_plain_responses:
-                for content in response_contents:
-                    await reply_helper(view=LayoutView().add_item(TextDisplay(content=content)))
+            # Pure tool-call responses (or empty ones) never stream content; don't leave the placeholder hanging
+            if placeholder_pending and not response_contents:
+                await response_msgs[-1].edit(content="✅ done")
+                response_contents = ["✅ done"]
+                placeholder_pending = False
+
+            if refine_task:
+                # Skip the refined answer if tools ran (it doesn't know their results) or more messages are waiting
+                if tool_call_count or not response_contents or _pending_msgs.get(new_msg.channel.id):
+                    refine_task.cancel()
+                else:
+                    refined = ""
+                    try:
+                        refined = ((await refine_task).choices[0].message.content or "").strip()
+                    except Exception:
+                        logging.exception("Refine pass failed; keeping fast answer")
+                    if refined:
+                        chunks = [refined[i : i + max_message_length] for i in range(0, len(refined), max_message_length)]
+                        for i, chunk in enumerate(chunks):
+                            if i < len(response_msgs):
+                                if use_plain_responses:
+                                    await response_msgs[i].edit(content=chunk, suppress=True)
+                                else:
+                                    await response_msgs[i].edit(embed=discord.Embed(description=chunk, color=EMBED_COLOR_COMPLETE))
+                            elif use_plain_responses:
+                                await reply_helper(content=chunk, silent=True, suppress_embeds=True)
+                            else:
+                                await reply_helper(embed=discord.Embed(description=chunk, color=EMBED_COLOR_COMPLETE), silent=True)
+                        for extra_msg in response_msgs[len(chunks):]:
+                            try:
+                                await extra_msg.delete()
+                            except discord.HTTPException:
+                                pass
+                        response_contents = chunks
 
     except Exception:
         logging.exception("Error while generating response")
+        if placeholder_pending and response_msgs:
+            try:
+                await response_msgs[-1].edit(content="💀 something broke on my end, try that again")
+            except discord.HTTPException:
+                pass
+    finally:
+        if refine_task and not refine_task.done():
+            refine_task.cancel()
 
     for response_msg in response_msgs:
         msg_nodes[response_msg.id].text = "".join(response_contents)
