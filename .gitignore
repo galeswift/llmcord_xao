@@ -12,3 +12,7 @@
 !config.yaml
 !docker-compose.yaml
 !requirements.txt
+
+!assets/
+!assets/enemies/
+!assets/enemies/*.png

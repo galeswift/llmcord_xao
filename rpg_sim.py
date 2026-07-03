@@ -8,11 +8,12 @@ Commands:
     add <name> <class>          add a simulated member (tank | ranged | melee | healer)
     <name>: <action>            queue that member's action, same keywords as Discord:
                                     keith: taunt
-                                    dave: heal keith        (names instead of @mentions)
+                                    dave: attack 2          (slime number for single-target verbs)
                                     amy: heal party
-                                    rob: charged
-    resolve [attack|aoe|special|random]
-                                resolve the round; optionally force the monster's move
+                                    rob: heal keith         (names instead of @mentions)
+    resolve [attack|aoe|special|random ...]
+                                resolve the round; forced picks are consumed one per acting
+                                slime in numbered order, e.g. `resolve attack special aoe`
     status                      show the fight state
     quit                        exit
 
@@ -126,7 +127,7 @@ class Sim:
             if parsed is None:
                 print(f"'{action_text.strip()}' isn't a {CLASSES[player['cls']]['name']} action.")
                 return True
-            ok, err = submit_action(self.state, uid, parsed[0], parsed[1])
+            ok, err = submit_action(self.state, uid, parsed[0], parsed[1], parsed[2])
             print("✅ locked in" if ok else f"❌ {err}")
             return True
 

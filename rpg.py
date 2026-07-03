@@ -9,6 +9,7 @@ import json
 import logging
 import random
 from datetime import time
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 import discord
@@ -19,6 +20,7 @@ from rpg_engine import (
     CLASS_VERB_HELP,
     CLASSES,
     ACTION_WORDS,
+    ENEMY_COUNT,
     MONSTER_HP,
     MONSTER_NAME,
     ROUND_TIMES,
@@ -32,6 +34,9 @@ from rpg_engine import (
     resolve_round,
     submit_action,
 )
+
+# Pre-generated enemy art (see generate_enemy_images.py) attached to encounter posts
+ENEMY_IMAGE_DIR = Path(__file__).parent / "assets" / "enemies"
 
 _bot = None
 _db = None
@@ -122,7 +127,7 @@ async def handle_message(msg: discord.Message) -> bool:
         if parsed is None:
             return False  # chatter from a combatant
 
-        ok, err = submit_action(state, msg.author.id, parsed[0], parsed[1])
+        ok, err = submit_action(state, msg.author.id, parsed[0], parsed[1], parsed[2])
         if ok:
             _save_fight(msg.channel.id, state)
             try:
@@ -223,16 +228,21 @@ def setup(bot, db, get_config: Callable[[], dict], narrate) -> None:
             return
         await interaction.response.send_message("Encounter started!", ephemeral=True)
 
-        encounter_msg = await interaction.channel.send(f"**You encounter a wild {MONSTER_NAME}!** Join the thread to fight it. ⚔️")
-        thread = await encounter_msg.create_thread(name=f"{MONSTER_NAME} fight")
+        image_path = ENEMY_IMAGE_DIR / "slime.png"
+        send_kwargs = dict(file=discord.File(image_path)) if image_path.exists() else {}
+        encounter_msg = await interaction.channel.send(
+            f"**You encounter a pack of {ENEMY_COUNT} wild slimes!** Join the thread to fight them. ⚔️", **send_kwargs
+        )
+        thread = await encounter_msg.create_thread(name=f"{MONSTER_NAME} pack fight")
         state = new_fight(next_deadline())
         async with _lock:
             _save_fight(thread.id, state)
         await thread.send(
-            f"**A wild {MONSTER_NAME} appears!** ({MONSTER_HP} HP)\n"
-            f"It attacks the lowest-HP fighter unless taunted — protect your squishies.\n\n"
+            f"**{ENEMY_COUNT} wild slimes appear!** ({MONSTER_HP} HP each)\n"
+            f"Each slime attacks the lowest-HP fighter unless taunted — protect your squishies.\n\n"
             f"To fight: {CLASS_PICK_HELP}\n"
-            f"Then type an action each round (you can change it until the round resolves; no action = basic attack).\n"
+            f"Then type an action each round (change it any time until the round resolves; no action = basic attack).\n"
+            f"Single-target actions take a slime number, e.g. `attack 2`, `dot 1`, `stun 3` — no number = first living slime.\n"
             f"Rounds resolve twice a day. Round 1 resolves <t:{state['deadline']}:R> (<t:{state['deadline']}:t>).\n"
             f"`status` shows the fight state any time."
         )

@@ -32,6 +32,13 @@ exactly what is written here and nothing more.
 - Healer - HP=4: Magic Attack (2 damage), Apply Regen, Heal Party, Heal Single, Revive ally (1 turn charge time)
 - First Monster - HP=20:  Attack (3 damage, will attack lowest HP target unless taunted by tank), AOE (1 damage), Special attack (1 round charge time, hits entire party for 3 damage, 3 round cooldown)
 
+### 2b. Multi-enemy update (designer rulings)
+- The encounter has **3 slimes** (20 HP each), each acting every round with the same AI.
+- **Taunt affects all enemies** — every slime's single-target Attack is forced onto the tank while taunted.
+- **Special attack:** any slime can charge it, but **only one slime may be charging at a time**, and
+  the special is on a **shared 3-round cooldown** across all slimes (after it fires or is cancelled).
+- **Charged Attack redirects** to the first living slime if its target dies before it lands.
+
 ## 3. Open questions — blocking implementation `[answer inline — designer]`
 
 Verb numbers:
@@ -97,6 +104,12 @@ Interface:
 - Duplicate classes are allowed. `status` reposts the fight state any time.
 - **Fight start:** manual `/rpg` command (admin only) for this first fight; daily automation comes
   with the broader loop later. Round times are America/Los_Angeles local time.
+- **Multi-enemy targeting:** single-target verbs take an enemy number — `attack 2`, `dot 1`,
+  `stun 3`, `charged 2`. Omitted target = first living slime, except `stun`, which prefers a
+  charging slime. Any single-target hit whose slime is already dead redirects to the first living
+  slime (matches the charged-attack ruling). Each slime tracks its own stun and DOT; DOT can be on
+  several slimes at once (one cast each). Slimes act in numbered order each round. Victory requires
+  all three dead; XP reward stays 5 until the designer says otherwise.
 
 ## 5. Decision Log
 
@@ -109,5 +122,6 @@ Interface:
 | 2026-07-02 | Implementation readings recorded in Section 4 — designer to correct anything wrong | Claude |
 | 2026-07-02 | Slime special gains a 3-round cooldown; a stun-cancel also triggers that cooldown | Keith |
 | 2026-07-02 | Feature gated behind `rpg_enabled` config flag, disabled by default | Keith |
+| 2026-07-02 | Encounter tripled to 3 slimes; taunt hits all; one shared special (one charger at a time, shared cooldown); charged redirects | Keith |
 
 

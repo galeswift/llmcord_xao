@@ -15,6 +15,7 @@ ROUND_TIMES = ((12, 0), (20, 0))
 
 MONSTER_NAME = "Wild Slime"
 MONSTER_HP = 20
+ENEMY_COUNT = 3
 XP_REWARD = 5
 
 CLASSES = {
@@ -25,65 +26,67 @@ CLASSES = {
 }
 
 CLASS_VERB_HELP = {
-    "tank": "`attack` (2 dmg) · `taunt` (slime must attack you for 2 rounds) · `heal` (self +2)",
-    "ranged": "`attack` (3 dmg) · `dot` (1 dmg/round, 4 rounds) · `buff` (party +1 HP & +1 dmg, 3 rounds)",
-    "melee": "`attack` (4 dmg) · `charged` (6 dmg, lands next round) · `stun` (slime skips 2 rounds, interrupts special; cooldown 2 rounds after)",
-    "healer": "`attack` (2 dmg magic) · `regen @who` (+2/round, 4 rounds) · `heal party` (+3 all) · `heal @who` (+7) · `revive @who` (lands next round, full HP)",
+    "tank": "`attack [#]` (2 dmg) · `taunt` (ALL slimes must attack you for 2 rounds) · `heal` (self +2)",
+    "ranged": "`attack [#]` (3 dmg) · `dot [#]` (1 dmg/round, 4 rounds, one slime) · `buff` (party +1 HP & +1 dmg, 3 rounds)",
+    "melee": "`attack [#]` (4 dmg) · `charged [#]` (6 dmg, lands next round) · `stun [#]` (slime skips 2 rounds, cancels its special; cooldown 2 rounds after)",
+    "healer": "`attack [#]` (2 dmg magic) · `regen @who` (+2/round, 4 rounds) · `heal party` (+3 all) · `heal @who` (+7) · `revive @who` (lands next round, full HP)",
 }
 
 CLASS_PICK_HELP = "pick your class: `class tank` (10 HP) · `class ranged` (6 HP) · `class melee` (8 HP) · `class healer` (4 HP)"
 
 ACTION_WORDS = ("join", "attack", "taunt", "heal", "dot", "buff", "charged", "charge", "stun", "magic", "regen", "revive", "status")
 
+ENEMY_TARGET_VERBS = ("attack", "magic", "dot", "stun", "charged", "charge")
+
 # Narrator flavor. Prose only — every number in an event comes from the engine, never from here.
 FLAVOR = {
     "attack_tank": (
-        "{name} slams shield-first into the slime with a wet SPLAT!",
-        "{name} delivers a crushing overhead swing!",
+        "{name} slams shield-first into {mname} with a wet SPLAT!",
+        "{name} delivers a crushing overhead swing to {mname}!",
     ),
     "attack_ranged": (
-        "{name} puts an arrow clean through the slime's wobbling bulk!",
-        "{name} looses a shot that thuds home dead-center!",
+        "{name} puts an arrow clean through {mname}'s wobbling bulk!",
+        "{name} looses a shot that thuds home dead-center in {mname}!",
     ),
     "attack_melee": (
-        "{name} carves a gleaming arc through the ooze!",
-        "{name} steps in low and slashes deep!",
+        "{name} carves a gleaming arc through {mname}!",
+        "{name} steps in low and slashes deep into {mname}!",
     ),
     "attack_healer": (
-        "{name} hurls a crackling bolt of holy light!",
-        "{name} mutters a quick prayer and zaps the slime!",
+        "{name} hurls a crackling bolt of holy light at {mname}!",
+        "{name} mutters a quick prayer and zaps {mname}!",
     ),
     "charged_start": (
         "{name} plants their feet and draws power into their blade...",
         "{name} winds up something big...",
     ),
     "charged_release": (
-        "{name}'s charged blow lands like a falling anvil — CRUNCH!",
-        "{name} releases the pent-up strike in one devastating arc!",
+        "{name}'s charged blow lands on {mname} like a falling anvil — CRUNCH!",
+        "{name} releases the pent-up strike into {mname} in one devastating arc!",
     ),
     "taunt": (
-        "{name} bangs their shield and bellows a challenge — the slime's beady eyes lock on!",
-        "{name} shouts an insult so cutting the slime forgets anyone else exists!",
+        "{name} bangs their shield and bellows a challenge — every slime's beady eyes lock on!",
+        "{name} shouts an insult so cutting the slimes forget anyone else exists!",
     ),
     "heal_self": (
         "{name} grits their teeth and binds their wounds mid-swing.",
         "{name} takes a long swig from a battered flask.",
     ),
     "dot": (
-        "{name} coats an arrow in something evil-smelling and lets it fly.",
-        "{name} tags the slime with a smoldering toxin.",
+        "{name} coats an arrow in something evil-smelling and plants it in {mname}.",
+        "{name} tags {mname} with a smoldering toxin.",
     ),
     "buff": (
         "{name} strikes up a battle hymn — the whole party stands taller!",
         "{name} passes out suspicious energy drinks — everyone feels invincible!",
     ),
     "stun": (
-        "{name} cracks the slime dead-center — it wobbles, cross-eyed and frozen!",
-        "{name} lands a ringing blow that leaves the slime seeing stars!",
+        "{name} cracks {mname} dead-center — it wobbles, cross-eyed and frozen!",
+        "{name} lands a ringing blow that leaves {mname} seeing stars!",
     ),
     "special_cancelled": (
-        "The slime's swelling bulk deflates with a sad squelch.",
-        "The building power fizzles out of the slime harmlessly.",
+        "{mname}'s swelling bulk deflates with a sad squelch.",
+        "The building power fizzles out of {mname} harmlessly.",
     ),
     "regen": (
         "{name} weaves a soft green glow around {target}.",
@@ -109,28 +112,28 @@ FLAVOR = {
         "{name}'s revive fizzles — {target} is already up.",
     ),
     "m_attack": (
-        "The slime rears up and crashes down on {target}!",
-        "The slime lashes out with a whip of ooze, catching {target} square!",
+        "{mname} rears up and crashes down on {target}!",
+        "{mname} lashes out with a whip of ooze, catching {target} square!",
     ),
     "m_aoe": (
-        "The slime bursts like a water balloon, splattering everyone with stinging goo!",
-        "The slime spins wildly, spraying acid across the whole party!",
+        "{mname} bursts like a water balloon, splattering everyone with stinging goo!",
+        "{mname} spins wildly, spraying acid across the whole party!",
     ),
     "m_charge": (
-        "⚠️ The slime swells to twice its size, quivering with building power...",
-        "⚠️ The slime glows an angry red and starts vibrating ominously...",
+        "⚠️ {mname} swells to twice its size, quivering with building power...",
+        "⚠️ {mname} glows an angry red and starts vibrating ominously...",
     ),
     "m_special": (
-        "💥 The slime ERUPTS, drowning the party in a tidal wave of ooze!",
-        "💥 The slime detonates outward in a concussive shockwave of goo!",
+        "💥 {mname} ERUPTS, drowning the party in a tidal wave of ooze!",
+        "💥 {mname} detonates outward in a concussive shockwave of goo!",
     ),
     "m_stunned": (
-        "The slime wobbles in place, utterly dazed.",
-        "The slime blinks its beady eyes, too scrambled to act.",
+        "{mname} wobbles in place, utterly dazed.",
+        "{mname} blinks its beady eyes, too scrambled to act.",
     ),
     "dot_tick": (
-        "The toxin sizzles deeper into the slime.",
-        "The slime hisses as the poison eats at it.",
+        "The toxin sizzles deeper into {mname}.",
+        "{mname} hisses as the poison eats at it.",
     ),
     "regen_tick": (
         "{name}'s wounds knit closed a little more.",
@@ -140,12 +143,16 @@ FLAVOR = {
         "💀 {name} collapses in a heap!",
         "💀 {name} goes down hard and doesn't get up!",
     ),
+    "m_death": (
+        "☠️ {mname} loses cohesion and splatters into harmless puddles!",
+        "☠️ {mname} deflates with a long, sad hiss and is no more!",
+    ),
     "victory": (
-        "🎉 The slime shudders, deflates, and splatters apart. **VICTORY!**",
-        "🎉 With one final pathetic gurgle, the slime melts into harmless puddles. **VICTORY!**",
+        "🎉 The last slime shudders, deflates, and splatters apart. **VICTORY!**",
+        "🎉 With one final pathetic gurgle, the last slime melts away. **VICTORY!**",
     ),
     "defeat": (
-        "☠️ The last fighter falls. The slime jiggles triumphantly over the fallen party.",
+        "☠️ The last fighter falls. The slimes jiggle triumphantly over the fallen party.",
     ),
 }
 
@@ -158,7 +165,7 @@ def _ev(key: str, mech: str = "", **kw) -> str:
     return f"{line} *({mech})*" if mech else line
 
 
-def new_fight(deadline_ts: int) -> dict:
+def new_fight(deadline_ts: int, enemies: int = ENEMY_COUNT) -> dict:
     return {
         "round": 1,
         "active": True,
@@ -166,7 +173,13 @@ def new_fight(deadline_ts: int) -> dict:
         "deadline": deadline_ts,
         "seq": 0,
         "prompted": [],
-        "monster": {"hp": MONSTER_HP, "max_hp": MONSTER_HP, "stun": 0, "dot": 0, "taunt": 0, "taunt_uid": None, "charging": False, "special_cd": 0},
+        "monsters": [
+            {"name": f"Slime {i + 1}" if enemies > 1 else "the slime", "hp": MONSTER_HP, "max_hp": MONSTER_HP, "stun": 0, "dot": 0, "charging": False}
+            for i in range(enemies)
+        ],
+        "taunt": 0,
+        "taunt_uid": None,
+        "special_cd": 0,
         "players": {},
         "join_order": [],
     }
@@ -186,51 +199,80 @@ def alive_players(state: dict) -> list[str]:
     return [uid for uid in state["join_order"] if state["players"][uid]["alive"]]
 
 
-def parse_verb(tokens: list[str], cls: str, target_uid: Optional[int]) -> Optional[tuple[str, Optional[int]]]:
-    """Map typed keywords to (verb, target). Returns None if the message isn't an action."""
+def living_monsters(state: dict) -> list[dict]:
+    return [m for m in state["monsters"] if m["hp"] > 0]
+
+
+def _pick_enemy(state: dict, enemy: Optional[int]) -> Optional[dict]:
+    """Explicit living target if given, else first living slime (redirect rule)."""
+    if enemy is not None and 1 <= enemy <= len(state["monsters"]) and state["monsters"][enemy - 1]["hp"] > 0:
+        return state["monsters"][enemy - 1]
+    living = living_monsters(state)
+    return living[0] if living else None
+
+
+def _default_stun_target(state: dict, enemy: Optional[int]) -> Optional[dict]:
+    """Stun prefers the explicit target, then a charging slime, then the first living one."""
+    if enemy is not None and 1 <= enemy <= len(state["monsters"]) and state["monsters"][enemy - 1]["hp"] > 0:
+        return state["monsters"][enemy - 1]
+    charger = next((m for m in living_monsters(state) if m["charging"]), None)
+    if charger:
+        return charger
+    living = living_monsters(state)
+    return living[0] if living else None
+
+
+def parse_verb(tokens: list[str], cls: str, target_uid: Optional[int]) -> Optional[tuple[str, Optional[int], Optional[int]]]:
+    """Map typed keywords to (verb, target_player, target_enemy). None if not an action."""
     word = tokens[0]
+    enemy = next((int(t) for t in tokens[1:] if t.isdigit()), None) if word in ENEMY_TARGET_VERBS else None
+
     if word == "attack":
-        return "attack", None
+        return "attack", None, enemy
     if cls == "tank":
         if word == "taunt":
-            return "taunt", None
+            return "taunt", None, None
         if word == "heal":
-            return "heal", None
+            return "heal", None, None
     elif cls == "ranged":
         if word == "dot":
-            return "dot", None
+            return "dot", None, enemy
         if word == "buff":
-            return "buff", None
+            return "buff", None, None
     elif cls == "melee":
         if word in ("charged", "charge"):
-            return "charged", None
+            return "charged", None, enemy
         if word == "stun":
-            return "stun", None
+            return "stun", None, enemy
     elif cls == "healer":
         if word == "magic":
-            return "attack", None
+            return "attack", None, enemy
         if word == "regen":
-            return "regen", target_uid
+            return "regen", target_uid, None
         if word == "heal":
             if len(tokens) > 1 and tokens[1] == "party":
-                return "healparty", None
-            return "healsingle", target_uid
+                return "healparty", None, None
+            return "healsingle", target_uid, None
         if word == "revive":
-            return "revive", target_uid
+            return "revive", target_uid, None
     return None
 
 
-def submit_action(state: dict, uid: int, verb: str, target_uid: Optional[int] = None) -> tuple[bool, str]:
+def submit_action(state: dict, uid: int, verb: str, target_uid: Optional[int] = None, enemy: Optional[int] = None) -> tuple[bool, str]:
     player = state["players"][str(uid)]
-    monster = state["monster"]
 
     if not player["alive"]:
         return False, "you're down. Only a healer's `revive` can bring you back."
     if player["charging"]:
         return False, "you're locked in — your charged action lands when this round resolves."
+    if enemy is not None and not (1 <= enemy <= len(state["monsters"])):
+        return False, f"there's no slime {enemy} — pick 1 to {len(state['monsters'])}."
+    if enemy is not None and state["monsters"][enemy - 1]["hp"] <= 0:
+        return False, f"{state['monsters'][enemy - 1]['name']} is already dead."
     if verb == "stun":
-        if monster["stun"] > 0:
-            return False, "the slime is already stunned."
+        target_m = _default_stun_target(state, enemy)
+        if target_m and target_m["stun"] > 0:
+            return False, f"{target_m['name']} is already stunned."
         if player["stun_cd"] > 0:
             return False, f"stun is on cooldown for {player['stun_cd']} more round(s)."
     if verb == "revive":
@@ -243,21 +285,25 @@ def submit_action(state: dict, uid: int, verb: str, target_uid: Optional[int] = 
             return False, "that needs a living party member as target, e.g. `heal @name`."
 
     state["seq"] += 1
-    player["action"] = {"verb": verb, "target": str(target_uid) if target_uid else None}
+    player["action"] = {"verb": verb, "target": str(target_uid) if target_uid else None, "enemy": enemy}
     player["seq"] = state["seq"]
     return True, ""
 
 
 def resolve_round(state: dict, rng: random.Random) -> list[str]:
-    monster = state["monster"]
-    monster.setdefault("special_cd", 0)  # fights saved before the cooldown rule existed
+    monsters = state["monsters"]
     players = state["players"]
     events: list[str] = []
 
-    def hit_monster(player: dict, base: int, label: str, flavor_key: str) -> None:
+    def hit_monster(player: dict, base: int, label: str, flavor_key: str, enemy: Optional[int]) -> None:
+        m = _pick_enemy(state, enemy)
+        if m is None:
+            return
         amount = base + (1 if player["buff"] > 0 else 0)
-        monster["hp"] = max(0, monster["hp"] - amount)
-        events.append(_ev(flavor_key, f"{label}: {amount} dmg — slime {monster['hp']}/{monster['max_hp']}", name=player["name"]))
+        m["hp"] = max(0, m["hp"] - amount)
+        events.append(_ev(flavor_key, f"{label}: {amount} dmg — {m['name']} {m['hp']}/{m['max_hp']}", name=player["name"], mname=m["name"]))
+        if m["hp"] == 0:
+            events.append(_ev("m_death", mname=m["name"]))
 
     def check_death(player: dict) -> None:
         if player["hp"] <= 0 and player["alive"]:
@@ -275,12 +321,12 @@ def resolve_round(state: dict, rng: random.Random) -> list[str]:
     released = set()
     for uid in state["join_order"]:
         player = players[uid]
-        if not (player["alive"] and player["charging"]) or monster["hp"] <= 0:
+        if not (player["alive"] and player["charging"]) or not living_monsters(state):
             continue
         charge, player["charging"] = player["charging"], None
         released.add(uid)
         if charge["verb"] == "charged":
-            hit_monster(player, 6, "Charged Attack", "charged_release")
+            hit_monster(player, 6, "Charged Attack", "charged_release", charge.get("enemy"))
         elif charge["verb"] == "revive":
             target = players.get(charge["target"] or "")
             if target and not target["alive"]:
@@ -296,25 +342,28 @@ def resolve_round(state: dict, rng: random.Random) -> list[str]:
     defaulters = [u for u in actors if not players[u]["action"]]
 
     for uid in submitted + defaulters:
-        if monster["hp"] <= 0:
+        if not living_monsters(state):
             break
         player = players[uid]
-        action = player["action"] or {"verb": "attack", "target": None}
+        action = player["action"] or {"verb": "attack", "target": None, "enemy": None}
         verb = action["verb"]
+        enemy = action.get("enemy")
 
         if verb == "attack":
-            hit_monster(player, CLASSES[player["cls"]]["attack"], CLASSES[player["cls"]]["attack_label"], f"attack_{player['cls']}")
+            hit_monster(player, CLASSES[player["cls"]]["attack"], CLASSES[player["cls"]]["attack_label"], f"attack_{player['cls']}", enemy)
         elif verb == "taunt":
-            monster["taunt"] = 2
-            monster["taunt_uid"] = uid
-            events.append(_ev("taunt", f"taunt: slime must attack {player['name']} for 2 rounds", name=player["name"]))
+            state["taunt"] = 2
+            state["taunt_uid"] = uid
+            events.append(_ev("taunt", f"taunt: ALL slimes must attack {player['name']} for 2 rounds", name=player["name"]))
         elif verb == "heal":
             healed = min(2, player["max_hp"] - player["hp"])
             player["hp"] += healed
             events.append(_ev("heal_self", f"+{healed} HP — {player['hp']}/{player['max_hp']}", name=player["name"]))
         elif verb == "dot":
-            monster["dot"] = 4
-            events.append(_ev("dot", "DOT: 1 dmg/round for 4 rounds", name=player["name"]))
+            m = _pick_enemy(state, enemy)
+            if m:
+                m["dot"] = 4
+                events.append(_ev("dot", f"DOT on {m['name']}: 1 dmg/round for 4 rounds", name=player["name"], mname=m["name"]))
         elif verb == "buff":
             for buff_uid in alive_players(state):
                 buffed = players[buff_uid]
@@ -324,14 +373,16 @@ def resolve_round(state: dict, rng: random.Random) -> list[str]:
                 buffed["buff"] = 3
             events.append(_ev("buff", "party +1 HP & +1 dmg for 3 rounds", name=player["name"]))
         elif verb == "stun":
-            interrupted = monster["charging"]
-            monster["stun"] = 2
-            monster["charging"] = False
-            player["stun_cd"] = 4  # 2 stunned rounds + 2 rounds cooldown after the stun ends
-            events.append(_ev("stun", "slime stunned for 2 rounds", name=player["name"]))
-            if interrupted:
-                monster["special_cd"] = 4  # cancelled special goes on its 3-round cooldown like usual
-                events.append(_ev("special_cancelled", "special cancelled — on cooldown 3 rounds"))
+            m = _default_stun_target(state, enemy)
+            if m:
+                interrupted = m["charging"]
+                m["stun"] = 2
+                m["charging"] = False
+                player["stun_cd"] = 4  # 2 stunned rounds + 2 rounds cooldown after the stun ends
+                events.append(_ev("stun", f"{m['name']} stunned for 2 rounds", name=player["name"], mname=m["name"]))
+                if interrupted:
+                    state["special_cd"] = 4  # cancelled special goes on the shared 3-round cooldown
+                    events.append(_ev("special_cancelled", "special cancelled — shared cooldown 3 rounds", mname=m["name"]))
         elif verb == "regen":
             target = players[action["target"]]
             target["regen"] = 4
@@ -347,49 +398,55 @@ def resolve_round(state: dict, rng: random.Random) -> list[str]:
             target["hp"] += healed
             events.append(_ev("healsingle", f"+{healed} HP — {target['name']} {target['hp']}/{target['max_hp']}", name=player["name"], target=target["name"]))
         elif verb == "charged":
-            player["charging"] = {"verb": "charged", "target": None}
+            player["charging"] = {"verb": "charged", "target": None, "enemy": enemy}
             events.append(_ev("charged_start", "charged attack: 6 dmg, lands next round", name=player["name"]))
         elif verb == "revive":
-            player["charging"] = {"verb": "revive", "target": action["target"]}
+            player["charging"] = {"verb": "revive", "target": action["target"], "enemy": None}
             events.append(_ev("revive_start", "revive: lands next round", name=player["name"], target=players[action["target"]]["name"]))
 
-    # 3. Monster phase
-    if monster["hp"] > 0:
-        if monster["stun"] > 0:
-            events.append(_ev("m_stunned", "stunned — slime skips its turn"))
-        elif monster["charging"]:
-            monster["charging"] = False
-            monster["special_cd"] = 4  # 3-round cooldown after firing (this round's tick counts down first)
-            events.append(_ev("m_special", "special attack: 3 dmg to everyone"))
+    # 3. Monster phase — each living slime acts in numbered order
+    for m in monsters:
+        if m["hp"] <= 0 or not alive_players(state):
+            continue
+        if m["stun"] > 0:
+            events.append(_ev("m_stunned", f"stunned — {m['name']} skips its turn", mname=m["name"]))
+        elif m["charging"]:
+            m["charging"] = False
+            state["special_cd"] = 4  # shared 3-round cooldown after firing (this round's tick counts first)
+            events.append(_ev("m_special", "special attack: 3 dmg to everyone", mname=m["name"]))
             for uid in alive_players(state):
                 players[uid]["hp"] -= 3
                 check_death(players[uid])
         else:
-            options = ["attack", "aoe"] + (["special"] if monster["special_cd"] == 0 else [])
+            no_charger = not any(x["charging"] for x in living_monsters(state))
+            options = ["attack", "aoe"] + (["special"] if state["special_cd"] == 0 and no_charger else [])
             choice = rng.choice(options)
             if choice == "attack":
                 alive = alive_players(state)
-                if monster["taunt"] > 0 and monster["taunt_uid"] in players and players[monster["taunt_uid"]]["alive"]:
-                    target_uid = monster["taunt_uid"]
+                if state["taunt"] > 0 and state["taunt_uid"] in players and players[state["taunt_uid"]]["alive"]:
+                    target_uid = state["taunt_uid"]
                 else:
                     target_uid = min(alive, key=lambda u: (players[u]["hp"], players[u]["max_hp"], state["join_order"].index(u)))
                 target = players[target_uid]
                 target["hp"] -= 3
-                events.append(_ev("m_attack", f"3 dmg — {target['name']} {max(target['hp'], 0)}/{target['max_hp']}", target=target["name"]))
+                events.append(_ev("m_attack", f"3 dmg — {target['name']} {max(target['hp'], 0)}/{target['max_hp']}", mname=m["name"], target=target["name"]))
                 check_death(target)
             elif choice == "aoe":
-                events.append(_ev("m_aoe", "1 dmg to everyone"))
+                events.append(_ev("m_aoe", "1 dmg to everyone", mname=m["name"]))
                 for uid in alive_players(state):
                     players[uid]["hp"] -= 1
                     check_death(players[uid])
             else:
-                monster["charging"] = True
-                events.append(_ev("m_charge", "special next round: 3 dmg to all — stun it to cancel!"))
+                m["charging"] = True
+                events.append(_ev("m_charge", "special next round: 3 dmg to all — stun it to cancel!", mname=m["name"]))
 
     # 4. End-of-round ticks, then status durations count down
-    if monster["hp"] > 0 and monster["dot"] > 0:
-        monster["hp"] = max(0, monster["hp"] - 1)
-        events.append(_ev("dot_tick", f"DOT: 1 dmg — slime {monster['hp']}/{monster['max_hp']}"))
+    for m in monsters:
+        if m["hp"] > 0 and m["dot"] > 0:
+            m["hp"] = max(0, m["hp"] - 1)
+            events.append(_ev("dot_tick", f"DOT: 1 dmg — {m['name']} {m['hp']}/{m['max_hp']}", mname=m["name"]))
+            if m["hp"] == 0:
+                events.append(_ev("m_death", mname=m["name"]))
     for uid in alive_players(state):
         player = players[uid]
         if player["regen"] > 0 and player["hp"] < player["max_hp"]:
@@ -397,10 +454,11 @@ def resolve_round(state: dict, rng: random.Random) -> list[str]:
             player["hp"] += healed
             events.append(_ev("regen_tick", f"regen: +{healed} — {player['hp']}/{player['max_hp']}", name=player["name"]))
 
-    monster["dot"] = max(0, monster["dot"] - 1)
-    monster["taunt"] = max(0, monster["taunt"] - 1)
-    monster["stun"] = max(0, monster["stun"] - 1)
-    monster["special_cd"] = max(0, monster["special_cd"] - 1)
+    for m in monsters:
+        m["dot"] = max(0, m["dot"] - 1)
+        m["stun"] = max(0, m["stun"] - 1)
+    state["taunt"] = max(0, state["taunt"] - 1)
+    state["special_cd"] = max(0, state["special_cd"] - 1)
     for player in players.values():
         player["stun_cd"] = max(0, player["stun_cd"] - 1)
         player["regen"] = max(0, player["regen"] - 1)
@@ -411,7 +469,7 @@ def resolve_round(state: dict, rng: random.Random) -> list[str]:
                 player["hp"] = min(player["hp"], player["max_hp"])
 
     # 5. Outcome
-    if monster["hp"] <= 0:
+    if not living_monsters(state):
         state["result"] = "victory"
         state["active"] = False
         events.append(_ev("victory"))
@@ -440,18 +498,26 @@ def next_deadline(now: Optional[datetime] = None) -> int:
 
 
 def format_status(state: dict, show_deadline: bool = True) -> str:
-    monster = state["monster"]
-    monster_tags = []
-    if monster["charging"]:
-        monster_tags.append("⚠️ CHARGING ITS SPECIAL")
-    if monster["stun"]:
-        monster_tags.append(f"stunned ({monster['stun']} round(s))")
-    if monster["dot"]:
-        monster_tags.append(f"DOT ({monster['dot']} round(s))")
-    if monster.get("special_cd", 0):
-        monster_tags.append(f"special on cooldown ({monster['special_cd']} round(s))")
-    lines = [f"**{MONSTER_NAME}** — {monster['hp']}/{monster['max_hp']} HP" + (f" — {', '.join(monster_tags)}" if monster_tags else "")]
+    header_tags = []
+    if state["taunt"] and state["taunt_uid"] in state["players"]:
+        header_tags.append(f"taunted by {state['players'][state['taunt_uid']]['name']} ({state['taunt']} round(s))")
+    if state["special_cd"]:
+        header_tags.append(f"special on shared cooldown ({state['special_cd']} round(s))")
+    lines = ["**Enemies**" + (f" — {', '.join(header_tags)}" if header_tags else "")]
 
+    for i, m in enumerate(state["monsters"], start=1):
+        tags = []
+        if m["hp"] <= 0:
+            tags.append("☠️ dead")
+        if m["charging"]:
+            tags.append("⚠️ CHARGING ITS SPECIAL")
+        if m["stun"]:
+            tags.append(f"stunned ({m['stun']} round(s))")
+        if m["dot"]:
+            tags.append(f"DOT ({m['dot']} round(s))")
+        lines.append(f"[{i}] {m['name']} — {m['hp']}/{m['max_hp']} HP" + (f" — {', '.join(tags)}" if tags else ""))
+
+    lines.append("")
     for uid in state["join_order"]:
         player = state["players"][uid]
         tags = []
