@@ -18,6 +18,8 @@ from openai import AsyncOpenAI, RateLimitError
 from PIL import Image
 import yaml
 
+import rpg
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s",
@@ -674,6 +676,8 @@ async def on_ready() -> None:
     if client_id := config.get("client_id"):
         logging.info(f"\n\nBOT INVITE URL:\nhttps://discord.com/oauth2/authorize?client_id={client_id}&permissions=412317191168&scope=bot\n")
 
+    rpg.start_scheduler()
+
     await discord_bot.tree.sync()
 
 
@@ -683,7 +687,13 @@ async def on_message(new_msg: discord.Message) -> None:
 
     config = await asyncio.to_thread(get_config)
 
-    if (not is_dm and discord_bot.user not in new_msg.mentions) or new_msg.author.bot:
+    if new_msg.author.bot:
+        return
+
+    if config.get("rpg_enabled", False) and await rpg.handle_message(new_msg):
+        return
+
+    if not is_dm and discord_bot.user not in new_msg.mentions:
         return
 
     role_ids = set(role.id for role in getattr(new_msg.author, "roles", ()))
@@ -1087,6 +1097,31 @@ async def generate_response(batch: list[discord.Message], config: dict[str, Any]
         for msg_id in sorted(msg_nodes.keys())[: num_nodes - MAX_MESSAGE_NODES]:
             async with msg_nodes.setdefault(msg_id, MsgNode()).lock:
                 msg_nodes.pop(msg_id, None)
+
+
+async def rpg_narrate(facts: str) -> str:
+    """Narrate an already-resolved RPG round in the bot's voice. Facts are canon; no dice here."""
+    narrate_config = await asyncio.to_thread(get_config)
+    provider, model = curr_model.removesuffix(":vision").split("/", 1)
+    provider_config = narrate_config["providers"][provider]
+    client = get_openai_client(provider_config["base_url"], provider_config.get("api_key", "sk-no-key-required"))
+
+    system = (narrate_config.get("system_prompt") or "").strip()
+    prompt = (
+        "You are narrating one round of the server's RPG fight as the DM, in your usual voice. "
+        "Use ONLY these resolved combat facts — do not change any numbers or invent outcomes. "
+        "2-4 punchy sentences:\n\n" + facts
+    )
+    resp = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        stream=False,
+        extra_body=narrate_config["models"].get(curr_model) or None,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
+rpg.setup(discord_bot, summaries_db, get_config, rpg_narrate)
 
 
 async def main() -> None:

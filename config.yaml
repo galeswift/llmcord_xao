@@ -19,6 +19,10 @@ image_background: "auto"
 
 # true = normal text messages (streamed via edits); false = the old colored embed boxes
 use_plain_responses: true
+
+# Server RPG minigame (see RPG-DESIGN.md). Off by default; flip to true to enable /rpg,
+# fight threads, and the twice-daily round resolver.
+rpg_enabled: false
 allow_dms: true
 
 permissions:
