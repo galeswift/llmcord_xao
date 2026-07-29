@@ -39,6 +39,19 @@ exactly what is written here and nothing more.
   the special is on a **shared 3-round cooldown** across all slimes (after it fires or is cancelled).
 - **Charged Attack redirects** to the first living slime if its target dies before it lands.
 
+### 2c. Enemy scaling by party (designer rulings)
+- **Level = 1 + (XP ÷ 10, rounded down)** — every 10 XP is a level. Everyone starts at level 1.
+- Each party member generates a **point budget** from their level: **10 + 5×(level−1)** points
+  (lv 1 = 10, lv 2 = 15, lv 3 = 20, ...).
+- Every enemy type has a **point cost**; a **slime costs 10 points**. (Goblin/orc/troll/dragon get
+  costs when their stats are designed.)
+- Enemy count = total party budget ÷ enemy cost, **rounded down** (leftover points are discarded),
+  **minimum 1 enemy**.
+- **Enemies spawn as players join**: the encounter opens with 1 slime; each join adds that member's
+  points to the budget and any newly-afforded slimes slither in immediately, with narration. The
+  enemy count never shrinks.
+- Net effect at level 1: exactly **1 slime per party member**; higher levels add more.
+
 ## 3. Open questions — blocking implementation `[answer inline — designer]`
 
 Verb numbers:
@@ -109,7 +122,13 @@ Interface:
   charging slime. Any single-target hit whose slime is already dead redirects to the first living
   slime (matches the charged-attack ruling). Each slime tracks its own stun and DOT; DOT can be on
   several slimes at once (one cast each). Slimes act in numbered order each round. Victory requires
-  all three dead; XP reward stays 5 until the designer says otherwise.
+  all enemies dead; XP reward stays 5 until the designer says otherwise.
+- **Scaling (2c):** a player's level is read from their banked XP at the moment they join the fight
+  (levelling mid-fight doesn't add points retroactively). Reinforcements spawn at full HP, take the
+  next number ([4] Slime 4, ...), and act starting with the next round resolution. A slime that
+  spawns while taunt is active is taunted like the rest (taunt is party-wide, not per-slime). A
+  spawn while another slime is charging follows the one-charger/shared-cooldown rule as usual.
+  Re-joining the same fight never adds your points twice.
 
 ## 5. Decision Log
 
@@ -123,5 +142,6 @@ Interface:
 | 2026-07-02 | Slime special gains a 3-round cooldown; a stun-cancel also triggers that cooldown | Keith |
 | 2026-07-02 | Feature gated behind `rpg_enabled` config flag, disabled by default | Keith |
 | 2026-07-02 | Encounter tripled to 3 slimes; taunt hits all; one shared special (one charger at a time, shared cooldown); charged redirects | Keith |
+| 2026-07-03 | Enemy scaling: level = 1 + XP/10; member budget 10+5×(lv−1); slime costs 10; floor, min 1; enemies spawn as players join (1 slime per lv-1 member) | Keith |
 
 

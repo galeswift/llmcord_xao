@@ -5,7 +5,8 @@ Usage:
     python rpg_sim.py script.txt    run commands from a file (one per line, # for comments)
 
 Commands:
-    add <name> <class>          add a simulated member (tank | ranged | melee | healer)
+    add <name> <class> [level]  add a simulated member (tank | ranged | melee | healer), level
+                                defaults to 1; higher levels grow the enemy point budget
     <name>: <action>            queue that member's action, same keywords as Discord:
                                     keith: taunt
                                     dave: attack 2          (slime number for single-target verbs)
@@ -31,6 +32,7 @@ from rpg_engine import (
     new_fight,
     parse_verb,
     resolve_round,
+    spawn_lines,
     submit_action,
 )
 
@@ -78,17 +80,21 @@ class Sim:
 
         if lowered.startswith("add "):
             parts = lowered.split()
-            if len(parts) != 3 or parts[2] not in CLASSES:
-                print("usage: add <name> <tank|ranged|melee|healer>")
+            if len(parts) not in (3, 4) or parts[2] not in CLASSES or (len(parts) == 4 and not parts[3].isdigit()):
+                print("usage: add <name> <tank|ranged|melee|healer> [level]")
                 return True
             name, cls = parts[1], parts[2]
+            level = int(parts[3]) if len(parts) == 4 else 1
             if name in self.names:
                 print(f"{name} is already in the fight.")
                 return True
             self.names[name] = self.next_uid
-            player = add_player(self.state, self.next_uid, name, cls)
+            before = len(self.state["monsters"])
+            player = add_player(self.state, self.next_uid, name, cls, level)
             self.next_uid += 1
-            print(f"⚔️ {name} joins as {CLASSES[cls]['name']} ({player['hp']} HP)")
+            print(f"⚔️ {name} joins as Lv {level} {CLASSES[cls]['name']} ({player['hp']} HP)")
+            for line in spawn_lines(self.state["monsters"][before:]):
+                print(f"  {line}")
             return True
 
         if lowered.startswith("resolve"):

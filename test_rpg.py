@@ -6,7 +6,15 @@ Single-slime tests (enemies=1) verify the core verb rules; multi-slime tests ver
 Run: python test_rpg.py
 """
 
-from rpg_engine import add_player, alive_players, new_fight, resolve_round, submit_action
+from rpg_engine import (
+    add_player,
+    alive_players,
+    level_for_xp,
+    new_fight,
+    points_for_level,
+    resolve_round,
+    submit_action,
+)
 
 
 class ForceRng:
@@ -327,6 +335,66 @@ def test_multi_submit_validation():
     state["monsters"][2]["hp"] = 0
     ok, err = submit_action(state, 1, "attack", enemy=3)
     assert not ok and "dead" in err
+
+
+# ---------------------------------------------------------------------------
+# Enemy scaling (design doc 2c)
+# ---------------------------------------------------------------------------
+
+def test_level_formula():
+    # Level = 1 + XP/10, floored
+    assert level_for_xp(0) == 1
+    assert level_for_xp(9) == 1
+    assert level_for_xp(10) == 2
+    assert level_for_xp(25) == 3
+    # Budget = 10 + 5×(lv−1)
+    assert points_for_level(1) == 10
+    assert points_for_level(2) == 15
+    assert points_for_level(3) == 20
+
+
+def test_scaling_one_slime_per_level1_member():
+    state = new_fight(deadline_ts=0)                     # scaling mode: opens with 1 slime
+    assert len(state["monsters"]) == 1
+    add_player(state, 1, "a", "tank")                    # 10 pts -> still 1 slime
+    assert len(state["monsters"]) == 1
+    add_player(state, 2, "b", "ranged")                  # 20 pts -> 2 slimes
+    assert len(state["monsters"]) == 2
+    add_player(state, 3, "c", "melee")                   # 30 pts -> 3
+    add_player(state, 4, "d", "healer")                  # 40 pts -> 4
+    assert len(state["monsters"]) == 4
+    assert [m["name"] for m in state["monsters"]] == ["Slime 1", "Slime 2", "Slime 3", "Slime 4"]
+
+
+def test_scaling_levels_and_floor():
+    state = new_fight(deadline_ts=0)
+    add_player(state, 1, "a", "tank", level=2)           # 15 pts -> floor(1.5) = 1 slime
+    assert len(state["monsters"]) == 1
+    add_player(state, 2, "b", "ranged", level=2)         # 30 pts -> 3 slimes
+    assert len(state["monsters"]) == 3
+    add_player(state, 3, "c", "melee", level=3)          # 50 pts -> 5 slimes
+    assert len(state["monsters"]) == 5
+
+
+def test_scaling_spawn_joins_fight_with_taunt_and_full_hp():
+    state = new_fight(deadline_ts=0)
+    add_player(state, 1, "tanky", "tank")
+    submit_action(state, 1, "taunt")
+    resolve_round(state, ForceRng("attack"))
+    state["monsters"][0]["hp"] = 200                     # keep slime 1 alive for the check
+    add_player(state, 2, "ranger", "ranged")             # spawns slime 2 mid-fight
+    assert state["monsters"][1]["hp"] == 20              # full HP
+    resolve_round(state, ForceRng("attack", "attack"))
+    # Taunt is party-wide: the newcomer slime also hits the tank, not the lowest-HP ranger
+    assert state["players"]["2"]["hp"] == state["players"]["2"]["max_hp"]
+    assert state["players"]["1"]["hp"] == 10 - 3 - 3 - 3   # round-1 hit, then both slimes while taunted
+
+
+def test_fixed_enemy_count_ignores_joins():
+    state = new_fight(deadline_ts=0, enemies=3)          # test/sim scaffolding: no scaling
+    for uid, cls in ((1, "tank"), (2, "ranged"), (3, "melee"), (4, "healer")):
+        add_player(state, uid, f"p{uid}", cls)
+    assert len(state["monsters"]) == 3
 
 
 def run_all():

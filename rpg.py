@@ -20,7 +20,6 @@ from rpg_engine import (
     CLASS_VERB_HELP,
     CLASSES,
     ACTION_WORDS,
-    ENEMY_COUNT,
     MONSTER_HP,
     MONSTER_NAME,
     ROUND_TIMES,
@@ -28,10 +27,12 @@ from rpg_engine import (
     XP_REWARD,
     add_player,
     format_status,
+    level_for_xp,
     new_fight,
     next_deadline,
     parse_verb,
     resolve_round,
+    spawn_lines,
     submit_action,
 )
 
@@ -61,6 +62,22 @@ def _load_fight(thread_id: int) -> Optional[dict]:
 def _stored_class(user_id: int) -> Optional[str]:
     row = _db.execute("SELECT cls FROM rpg_players WHERE user_id = ?", (user_id,)).fetchone()
     return row[0] if row else None
+
+
+def _stored_level(user_id: int) -> int:
+    row = _db.execute("SELECT xp FROM rpg_players WHERE user_id = ?", (user_id,)).fetchone()
+    return level_for_xp(row[0] if row else 0)
+
+
+def _join_fight(state: dict, author: discord.abc.User, cls: str) -> tuple[dict, str]:
+    """Add a member at their banked-XP level; reinforcements may spawn (design doc 2c)."""
+    before = len(state["monsters"])
+    level = _stored_level(author.id)
+    player = add_player(state, author.id, author.display_name, cls, level)
+    text = f"⚔️ {player['name']} joins as **{CLASSES[cls]['name']}** (Lv {level}, {player['hp']} HP)!"
+    for line in spawn_lines(state["monsters"][before:]):
+        text += f"\n{line}"
+    return player, text
 
 
 async def handle_message(msg: discord.Message) -> bool:
@@ -95,12 +112,9 @@ async def handle_message(msg: discord.Message) -> bool:
                 (msg.author.id, cls),
             )
             _db.commit()
-            player = add_player(state, msg.author.id, msg.author.display_name, cls)
+            player, join_text = _join_fight(state, msg.author, cls)
             _save_fight(msg.channel.id, state)
-            await msg.reply(
-                f"⚔️ {player['name']} joins as **{CLASSES[cls]['name']}** ({player['hp']} HP)!\nYour verbs: {CLASS_VERB_HELP[cls]}",
-                silent=True,
-            )
+            await msg.reply(f"{join_text}\nYour verbs: {CLASS_VERB_HELP[cls]}", silent=True)
             return True
 
         if player is None:
@@ -110,9 +124,9 @@ async def handle_message(msg: discord.Message) -> bool:
             if known_cls is None:
                 await msg.reply(CLASS_PICK_HELP, silent=True)
                 return True
-            player = add_player(state, msg.author.id, msg.author.display_name, known_cls)
+            player, join_text = _join_fight(state, msg.author, known_cls)
             _save_fight(msg.channel.id, state)
-            await msg.channel.send(f"⚔️ {player['name']} joins as **{CLASSES[known_cls]['name']}** ({player['hp']} HP)!")
+            await msg.channel.send(join_text)
             if tokens[0] == "join":
                 return True
 
@@ -231,14 +245,16 @@ def setup(bot, db, get_config: Callable[[], dict], narrate) -> None:
         image_path = ENEMY_IMAGE_DIR / "slime.png"
         send_kwargs = dict(file=discord.File(image_path)) if image_path.exists() else {}
         encounter_msg = await interaction.channel.send(
-            f"**You encounter a pack of {ENEMY_COUNT} wild slimes!** Join the thread to fight them. ⚔️", **send_kwargs
+            f"**You encounter a wild slime!** Join the thread to fight it — every fighter who joins draws in more slimes. ⚔️",
+            **send_kwargs,
         )
         thread = await encounter_msg.create_thread(name=f"{MONSTER_NAME} pack fight")
         state = new_fight(next_deadline())
         async with _lock:
             _save_fight(thread.id, state)
         await thread.send(
-            f"**{ENEMY_COUNT} wild slimes appear!** ({MONSTER_HP} HP each)\n"
+            f"**A wild slime appears!** ({MONSTER_HP} HP)\n"
+            f"More slimes join as fighters do — roughly one per member, extra for higher levels.\n"
             f"Each slime attacks the lowest-HP fighter unless taunted — protect your squishies.\n\n"
             f"To fight: {CLASS_PICK_HELP}\n"
             f"Then type an action each round (change it any time until the round resolves; no action = basic attack).\n"

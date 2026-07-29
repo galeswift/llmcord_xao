@@ -15,8 +15,20 @@ ROUND_TIMES = ((12, 0), (20, 0))
 
 MONSTER_NAME = "Wild Slime"
 MONSTER_HP = 20
-ENEMY_COUNT = 3
 XP_REWARD = 5
+
+# Scaling (design doc 2c): each member funds the enemy pool from their level.
+SLIME_COST = 10
+
+
+def level_for_xp(xp: int) -> int:
+    """Level = 1 + XP/10, rounded down."""
+    return 1 + max(0, xp) // 10
+
+
+def points_for_level(level: int) -> int:
+    """A member generates 10 + 5×(level−1) budget points."""
+    return 10 + 5 * (max(1, level) - 1)
 
 CLASSES = {
     "tank": dict(name="Tank", hp=10, attack=2, attack_label="Attack"),
@@ -147,6 +159,10 @@ FLAVOR = {
         "☠️ {mname} loses cohesion and splatters into harmless puddles!",
         "☠️ {mname} deflates with a long, sad hiss and is no more!",
     ),
+    "spawn": (
+        "🟢 Drawn by the commotion, {mname} squelches out of the undergrowth!",
+        "🟢 The ground gurgles... {mname} bubbles up to join the fray!",
+    ),
     "victory": (
         "🎉 The last slime shudders, deflates, and splatters apart. **VICTORY!**",
         "🎉 With one final pathetic gurgle, the last slime melts away. **VICTORY!**",
@@ -165,7 +181,16 @@ def _ev(key: str, mech: str = "", **kw) -> str:
     return f"{line} *({mech})*" if mech else line
 
 
-def new_fight(deadline_ts: int, enemies: int = ENEMY_COUNT) -> dict:
+def _new_slime(name: str) -> dict:
+    return {"name": name, "hp": MONSTER_HP, "max_hp": MONSTER_HP, "stun": 0, "dot": 0, "charging": False}
+
+
+def new_fight(deadline_ts: int, enemies: Optional[int] = None) -> dict:
+    """enemies=None (the real game) scales with the party per design doc 2c: the fight
+    opens with 1 slime and reinforcements spawn as players join. An explicit count
+    fixes the enemies and disables scaling (sim/test scaffolding)."""
+    scaling = enemies is None
+    count = 1 if scaling else enemies
     return {
         "round": 1,
         "active": True,
@@ -174,9 +199,11 @@ def new_fight(deadline_ts: int, enemies: int = ENEMY_COUNT) -> dict:
         "seq": 0,
         "prompted": [],
         "monsters": [
-            {"name": f"Slime {i + 1}" if enemies > 1 else "the slime", "hp": MONSTER_HP, "max_hp": MONSTER_HP, "stun": 0, "dot": 0, "charging": False}
-            for i in range(enemies)
+            {**_new_slime(f"Slime {i + 1}" if scaling or count > 1 else "the slime")}
+            for i in range(count)
         ],
+        "scaling": scaling,
+        "budget": 0,
         "taunt": 0,
         "taunt_uid": None,
         "special_cd": 0,
@@ -185,14 +212,24 @@ def new_fight(deadline_ts: int, enemies: int = ENEMY_COUNT) -> dict:
     }
 
 
-def add_player(state: dict, uid: int, name: str, cls: str) -> dict:
+def add_player(state: dict, uid: int, name: str, cls: str, level: int = 1) -> dict:
     player = dict(
-        name=name, cls=cls, hp=CLASSES[cls]["hp"], max_hp=CLASSES[cls]["hp"], alive=True,
+        name=name, cls=cls, level=level, hp=CLASSES[cls]["hp"], max_hp=CLASSES[cls]["hp"], alive=True,
         regen=0, buff=0, stun_cd=0, charging=None, action=None, seq=None,
     )
     state["players"][str(uid)] = player
     state["join_order"].append(str(uid))
+    if state.get("scaling"):
+        state["budget"] += points_for_level(level)
+        target = max(1, state["budget"] // SLIME_COST)
+        while len(state["monsters"]) < target:
+            state["monsters"].append(_new_slime(f"Slime {len(state['monsters']) + 1}"))
     return player
+
+
+def spawn_lines(monsters: list[dict]) -> list[str]:
+    """Narrated reinforcement lines for slimes that just spawned (design doc 2c)."""
+    return [_ev("spawn", f"{m['name']} joins the fight: {m['hp']} HP", mname=m["name"]) for m in monsters]
 
 
 def alive_players(state: dict) -> list[str]:
@@ -533,7 +570,7 @@ def format_status(state: dict, show_deadline: bool = True) -> str:
             tags.append(f"stun cd {player['stun_cd']}")
         if player["action"]:
             tags.append("action in")
-        lines.append(f"· {player['name']} ({CLASSES[player['cls']]['name']}) {player['hp']}/{player['max_hp']} HP" + (f" — {', '.join(tags)}" if tags else ""))
+        lines.append(f"· {player['name']} (Lv {player.get('level', 1)} {CLASSES[player['cls']]['name']}) {player['hp']}/{player['max_hp']} HP" + (f" — {', '.join(tags)}" if tags else ""))
 
     if state["active"] and show_deadline:
         lines.append(f"\nRound {state['round']} resolves <t:{state['deadline']}:R> (<t:{state['deadline']}:t>). Type your action to lock it in — no action = basic attack.")

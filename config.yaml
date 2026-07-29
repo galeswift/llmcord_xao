@@ -13,8 +13,8 @@ max_messages: 25
 channel_context_messages: 50
 
 image_model: "gpt-image-2"
-image_size: "1024x1024"
-image_quality: "medium"
+image_size: "auto"
+image_quality: "auto"
 image_background: "auto"
 
 # true = normal text messages (streamed via edits); false = the old colored embed boxes
