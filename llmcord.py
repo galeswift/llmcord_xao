@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import logging
 from typing import Any, Literal, Optional
+from zoneinfo import ZoneInfo
 
 import discord
 from discord.app_commands import Choice
@@ -178,8 +179,8 @@ DISCORD_TOOLS = [
                 "properties": {
                     "name": {"type": "string", "description": "Event name"},
                     "description": {"type": "string", "description": "Event description"},
-                    "start_time": {"type": "string", "description": "Start time in ISO 8601 format (e.g. 2025-06-01T19:00:00)"},
-                    "end_time": {"type": "string", "description": "End time in ISO 8601 format (optional, defaults to 1 hour after start)"},
+                    "start_time": {"type": "string", "description": "Start time in ISO 8601 format (e.g. 2025-06-01T19:00:00). Omit a UTC offset to use the server's configured local timezone."},
+                    "end_time": {"type": "string", "description": "End time in ISO 8601 format (optional, defaults to 1 hour after start). Omit a UTC offset to use the server's configured local timezone."},
                     "location": {"type": "string", "description": "Event location"},
                 },
                 "required": ["name", "start_time"],
@@ -340,11 +341,19 @@ async def execute_tool(name: str, args: dict, msg: discord.Message) -> str:
             if not msg.guild:
                 return "Cannot create events in DMs."
             try:
-                start_time = datetime.fromisoformat(args["start_time"]).astimezone()
+                event_tz = ZoneInfo(config.get("event_timezone", "America/Los_Angeles"))
+            except Exception:
+                event_tz = ZoneInfo("America/Los_Angeles")
+            try:
+                start_time = datetime.fromisoformat(args["start_time"])
+                if start_time.tzinfo is None:
+                    start_time = start_time.replace(tzinfo=event_tz)
             except (KeyError, ValueError):
                 return "Invalid start_time. Use ISO 8601 format (e.g. 2025-06-01T19:00:00)."
             try:
-                end_time = datetime.fromisoformat(args["end_time"]).astimezone()
+                end_time = datetime.fromisoformat(args["end_time"])
+                if end_time.tzinfo is None:
+                    end_time = end_time.replace(tzinfo=event_tz)
             except (KeyError, ValueError):
                 end_time = start_time + timedelta(hours=1)
             await msg.guild.create_scheduled_event(

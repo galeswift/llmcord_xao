@@ -25,6 +25,11 @@ use_plain_responses: true
 rpg_enabled: false
 allow_dms: true
 
+# Timezone applied to create_event start/end times when the model gives a time with no
+# offset (e.g. "2025-06-01T19:00:00"). Use an IANA name, e.g. "America/Los_Angeles",
+# "America/New_York", "UTC". See: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+event_timezone: "America/Los_Angeles"
+
 permissions:
   users:
     admin_ids: [172845476180262913]
