@@ -233,14 +233,12 @@ DISCORD_TOOLS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": (
-            "Search the public internet. Use this whenever answering the user's "
-            "request would benefit from information not already available in the "
+            "description": "Search the public internet. Use this whenever answering the user'srequest would benefit from information not already available in the "
             "conversation, including websites, URLs, current information, news, "
             "documentation, products, prices, recent events, or facts that may "
             "have changed. If the user explicitly asks you to search, browse, "
             "look something up, check a website, or verify something online, "
-            "you MUST use this tool."
+            "you MUST use this tool.",
             "parameters": {
                 "type": "object",
                 "properties": {
