@@ -233,7 +233,14 @@ DISCORD_TOOLS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the web for current, real-time information. Use this when the user asks about recent events, live data, current prices, or anything that may have changed since your training cutoff.",
+            "description": (
+            "Search the public internet. Use this whenever answering the user's "
+            "request would benefit from information not already available in the "
+            "conversation, including websites, URLs, current information, news, "
+            "documentation, products, prices, recent events, or facts that may "
+            "have changed. If the user explicitly asks you to search, browse, "
+            "look something up, check a website, or verify something online, "
+            "you MUST use this tool."
             "parameters": {
                 "type": "object",
                 "properties": {
