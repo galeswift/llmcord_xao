@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import json
+import os
 import random
 import sqlite3
 from base64 import b64encode
@@ -133,7 +134,8 @@ def get_openai_client(base_url: str, api_key: str) -> AsyncOpenAI:
         _openai_clients[key] = AsyncOpenAI(base_url=base_url, api_key=api_key)
     return _openai_clients[key]
 
-summaries_db = sqlite3.connect("summaries.db", check_same_thread=False)
+# DATA_DIR points at a persistent volume in production (e.g. /data); defaults to the working directory locally
+summaries_db = sqlite3.connect(os.path.join(os.environ.get("DATA_DIR", "."), "summaries.db"), check_same_thread=False)
 summaries_db.execute("""
     CREATE TABLE IF NOT EXISTS notes (
         scope_id INTEGER,
